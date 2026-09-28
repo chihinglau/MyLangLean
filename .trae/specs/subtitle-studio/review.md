@@ -55,3 +55,38 @@
 - `.tools/studio-out/sample.mll.json`（small 识别产物）、`sample.edited.mll.json`（人工修正导出）、`quality_report.txt`、`studio_gui.png`。
 - `.tools/hf-cache/hub/`：tiny+small 模型（工作区内，可离线）。
 - `scripts/download-whisper-model.ps1`：弱网环境手工模型下载（重试+落 HF 缓存结构）。
+
+---
+
+# v1.2 增补评审：一键机翻 + App 三态补全（2026-09-29）
+
+评审方式：端点实测 + 代码走查 + 全量自动化回归 + HBN-AL00 真机连续截图；需求源自「App 原文/双语/盲听三态残缺：双语依赖每句 translation，而工坊只能逐句手填」。
+
+## 五、设计决策复核
+
+| 决策 | 复核结论 |
+|---|---|
+| 免 key 端点而非付费 API | 符合零预算约束；实测 MyMemory 可达（匿名额度对个人字幕量足够，MLL_TRANSLATOR_EMAIL 可提额），Google gtx 作海外降级；全部标准库 urllib，requirements.txt 不变 |
+| 翻译放 PC 工坊、App 只消费 | App 不引入网络/密钥面；schema v1 的 translation 字段早已冻结存在，零迁移成本 |
+| 默认跳过已有译文 + force 重译 | 断点续译且保护人工译文；gui_smoke 三轮断言（人工句保留/只补缺句/强制全覆盖）锁定 |
+| 失败按句记录、保留成功部分 | 弱网友好；GUI 弹框列句号并引导重跑，CLI 退出码 3 但仍导出 |
+| App 全缺 vs 部分缺区别对待 | 全缺：一条可关闭横幅，不逐句刷屏；部分缺：原位浅色占位，缺口可见；widget 测试双场景覆盖 |
+| 盲听改训练卡 | 默认仍全隐（不违背盲听初衷），揭示为显式动作；随播放自动换句且换句重隐、译文偷看与单句循环直达 |
+
+## 六、本轮发现并修复的问题
+
+1. studio 树重建后 Tk **异步**重发已选中行的 `<<TreeviewSelect>>`，导致重复 commit 且「翻译完成」状态条被实时校验覆盖——`_on_select_segment` 忽略 `idx == current_seg` 的事件；gui_smoke 增加状态断言守护。
+2. 新代码避免再用已废弃的 withOpacity（banner/盲听卡用 withValues），analyze issue 数维持基线 15 条不增。
+
+## 七、AC 复核（新增）
+
+| AC | 结论 | 依据 |
+|---|---|---|
+| AC-9 工坊一键机翻 | **PASS** | translator 单测 8/8（语言码、gtx 解析、MyMemory 解析/额度、降级、重试、跳过/覆盖/失败保留/同语拒绝）；gui_smoke 翻译三轮通过；CLI 真实 MyMemory 翻译样例 4/4，二次运行 0 新译全部跳过 |
+| AC-10 App 三态完整 | **PASS**（真机验收） | subtitle_modes_test 5/5；dev-s4 横幅（旧无译文字幕）、dev-s8 双语 EN+ZH、dev-s10/s11/s12 盲听全隐→揭示→看译文、dev-s13 原文，共 6 张真机截图；替换字幕后 toast「字幕已关联」 |
+
+## 八、剩余风险（v1.2）
+
+1. MyMemory 匿名额度（约 5k 字符/日）对长有声书可能触顶；触顶后自动尝试 gtx（国内不可达则整句失败、保留待续译），缓解手段 MLL_TRANSLATOR_EMAIL 或自建 LibreTranslate 已在文档/代码备好。
+2. 机翻质量为通用 MT 水平，不替代人工校对；GUI 保留逐句译文 Entry 与「保存译文」精修路径。
+3. 仅验证了 en→zh-CN 真实链路；其余目标语言走同一 langpair 协议，单测覆盖语言码归一但未逐一真机翻译。

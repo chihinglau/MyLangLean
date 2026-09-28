@@ -43,6 +43,9 @@ class TranscriptSegment {
   final String? translation;
   final List<WordToken> words;
 
+  /// Machine/human gloss for this sentence (filled in by 字幕工坊).
+  bool get hasTranslation => (translation ?? '').trim().isNotEmpty;
+
   Duration get startOffset => Duration(milliseconds: (start * 1000).round());
   Duration get endOffset => Duration(milliseconds: (end * 1000).round());
 
@@ -82,6 +85,14 @@ class Transcript {
 
   Duration get totalDuration =>
       Duration(milliseconds: (duration * 1000).round());
+
+  int get translatedCount =>
+      segments.where((s) => s.hasTranslation).length;
+
+  /// True when at least one sentence carries a translation. The player's
+  /// bilingual mode uses this to tell a fully-untranslated transcript apart
+  /// from a partially translated one.
+  bool get hasTranslations => translatedCount > 0;
 
   factory Transcript.fromJson(Map<String, dynamic> json) => Transcript(
         version: (json['version'] as num?)?.toInt() ?? 1,

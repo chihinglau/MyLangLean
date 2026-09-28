@@ -1,6 +1,6 @@
 # OORA 复刻版（MyLangLean）软件设计方案
 
-> 版本：v1.1 ｜ 日期：2026-09-28（v1.0 初稿 2026-09-27）
+> 版本：v1.2 ｜ 日期：2026-09-29（v1.1 2026-09-28；v1.0 初稿 2026-09-27）
 > 目标平台：HarmonyOS 4.2.0（设计目标）｜ 现阶段可运行平台：**同机 AOSP 12 兼容层（Android arm64 APK，已真机验收）**
 > 预留移植：iOS 13+
 > 参考产品：https://oora.yoshinn.com.cn/#product
@@ -12,6 +12,7 @@
 |---|---|---|
 | v1.0 | 2026-09-27 | 产品拆解、技术选型、PAL 架构、服务端 API、鸿蒙适配、里程碑 |
 | v1.1 | 2026-09-28 | 按实际落地更新：双 Flutter 工具链、Android PAL 三件套、本地媒体库持久化、**字幕工坊**（PC 侧逐词字幕生产工具）、HarmonyOS 消费机 HAP 安装阻断的实测结论、**第 14 章真机联调环境与调试方法**、8 条验收标准全部 PASS 的证据链 |
+| v1.2 | 2026-09-29 | **字幕工坊一键机翻**（translator.py：免 key MyMemory 主通道 + Google/LibreTranslate 降级，断点续译不覆盖人工译文；GUI 目标语言/进度/重译，CLI `-t/--translate-to/--retranslate`）；**App 三态补全**：双语模式无译文横幅与逐句缺译占位、盲听升级为「显示当前句/看译文/单句循环」训练卡；pytest 15 项、flutter test 18 项全绿，HBN-AL00 真机三态截图验收；**工坊可 PyInstaller 打包为免安装单文件 SubtitleStudio.exe（约 93MB，--selfcheck + GUI 截图双重自测通过）** |
 
 ---
 
@@ -28,7 +29,7 @@
 | F1 | 发现内容 | 精选播客、RSS 搜索/订阅、iTunes/PodcastIndex 检索、语言/主题/难度筛选 | ✅ | | UI + Mock 目录完成；服务端代理已备 |
 | F2 | 内容管理 | 本地音视频导入、播客单集下载、收藏、个人资料库 | ✅ | | **Android SAF 导入 + JSON 持久化已真机验收**；OH picker 协议预留 |
 | F3 | 逐词字幕 | ASR 自动转录、逐词时间轴、播放同步卡拉OK高亮、点词定位、单句循环 | ✅ | | **App 播放高亮 + PC 字幕工坊生产链路全部真机验收** |
-| F4 | 翻译理解 | 多语种互译、原文/译文对照、字幕样式（字号/显隐/盲听）、点词查词 | ✅ | | 双语切换/盲听/字号完成；译文由字幕文件或服务端带入 |
+| F4 | 翻译理解 | 多语种互译、原文/译文对照、字幕样式（字号/显隐/盲听）、点词查词 | ✅ | | 双语切换/盲听/字号完成；**译文由字幕工坊一键机翻或人工填入口写入字幕文件（v1.2）**；无译文时双语模式显式横幅/占位提示，盲听可按需揭示当前句与译文 |
 | F5 | 影子跟读 | AB 循环、0.6–1.5× 变速、录音、原声/录音波形对比、发音评分 | ✅(启发式评分) | 音素级 GOP | UI + 录音 + V1 评分（shadow_scorer）完成 |
 | F6 | 账户额度 | 游客设备ID免登（字幕试看 5 分钟）、登录注册、每月 100 分钟转录额度 | ✅ | 订阅 | 服务端 JWT/额度/幂等计费冒烟通过；App 端为 Mock |
 | F7 | 履历作品 | 练习历史、录音作品管理、成长曲线 | ✅ | 一键成片/分享 | 履历页 + 本地记录完成 |
@@ -77,7 +78,7 @@ PC：音视频文件 ──字幕工坊(faster-whisper 逐词识别+人工校对
 | OH 音频/录音/选择器 | ArkTS AVPlayer/AVRecorder/AudioViewPicker 插件（`app/ohos/.../plugins/`） | 源码与协议已就绪，待 HarmonyOS NEXT 设备安装运行 |
 | PC 字幕生产 | Python 3.10+ / faster-whisper / PyAV / tkinter | Windows 本地「字幕工坊」，模型缓存在工作区可离线 |
 | 服务端 | FastAPI + RQ 规划 + PostgreSQL/Redis + FFmpeg | 仓库内为 stub ASR 可跑通全链路；生产切 faster_whisper |
-| 翻译 | 可插拔 Provider（大模型/DeepL/有道） | 接口化 |
+| 翻译 | 可插拔 Provider（v1.2 已落地：免 key MyMemory→Google gtx→LibreTranslate 降级链；后续可接大模型/DeepL/有道） | ✅ 工坊 GUI+CLI |
 | 评分 | V1 时长/停顿/能量启发式（`shadow_scorer.dart`）；V2 wav2vec2 GOP | 先可用后精准 |
 
 ### 3.1 双平台构建现实（重要，2026-09-28 实测）
@@ -269,22 +270,32 @@ SAF 选媒体(uri) ──后台线程复制──▶ filesDir/imports/<name>（�
 
 ## 9. 字幕工坊（PC 侧生产工具，本期新增）
 
-位置：`tools/subtitle-studio/`（包 `mll_subtitles`：schema / transcriber / cli / studio），启动器 `启动字幕工坊.bat`。
+位置：`tools/subtitle-studio/`（包 `mll_subtitles`：schema / transcriber / translator / cli / studio），启动器 `启动字幕工坊.bat`。
 
 | 模块 | 内容 |
 |---|---|
 | transcriber.py | faster-whisper 封装（tiny/small 档、int8/float32 精度、语言可指定、PyAV 直接解音视频）；启动时把 HF_HOME 指向工作区 `.tools/hf-cache`（import faster_whisper **之前**设置） |
-| schema.py | Segment/Word/Transcript dataclass、from_whisper 映射、validate、save_json（indent=2, ensure_ascii=False，与 App 同格式） |
-| studio.py | tkinter GUI：打开媒体/模型档/语言/识别；按句 Treeview 词表（词/起止/置信度行内编辑、±0.05s 微调）；句译文、加词/删词/拆句/合并；后台线程识别+队列刷新；实时校验；导出默认媒体同目录同名 `.mll.json` |
-| cli.py | 命令行批处理（含 --compute-type） |
+| translator.py | **（v1.2 新增）** 免 key 机器翻译：可插拔 provider 链（默认 `mymemory,google`，均标准库 urllib；另支持自建 LibreTranslate），每通道 2 次重试+自动降级、句间 0.4s 节流；**默认跳过已有非空译文（断点续译、人工译文不被覆盖）**，`force=True` 才重译；源语言=目标语言直接拒绝；env 可配 `MLL_TRANSLATE_PROVIDER` / `MLL_TRANSLATOR_EMAIL`（MyMemory 提额）/ `MLL_LIBRETRANSLATE_URL` |
+| schema.py | Segment/Word/Transcript dataclass、from_whisper 映射、validate、save_json（indent=2, ensure_ascii=False，与 App 同格式）；`translation` 字段 v1 即存在，机翻直接写入无需改 schema 版本 |
+| studio.py | tkinter GUI：打开媒体/模型档/语言/识别；按句 Treeview 词表（词/起止/置信度行内编辑、±0.05s 微调），**「译文」列以 ✓ 标识已译句**；句译文、加词/删词/拆句/合并；后台线程识别+队列刷新；实时校验；**控制条增「译成」目标语言（zh-CN/en/ja/ko/fr/de/es/ru）+「一键翻译」（仅补缺译句）+「全部重译」，后台线程翻译、日志区进度、失败句保留成功部分并可续跑**；导出默认媒体同目录同名 `.mll.json` |
+| cli.py | 命令行批处理（含 --compute-type）；**v1.2 起输入可以是已有 `.mll.json`（只翻译模式，输出默认 `*.zh-CN.mll.json`）；`-t/--translate-to`、`--retranslate`、`--provider`；部分失败退出码 3 但已保存成功部分** |
 | eval_quality.py | 质量评估：WER + 词边界误差（mean/p90/0.5s 命中率） |
-| tests/ | test_schema.py（7 项）、gui_smoke.py（真实事件驱动：改词/微调/译文/拆并句/导出回归，含 B1/B2 断言） |
+| tests/ | test_schema.py（7 项）、**test_translator.py（8 项：语言码归一、gtx 响应解析、MyMemory 解析/额度、降级链、重试、跳过/覆盖/失败保留/同语拒绝，全程假 provider 无网络）**、gui_smoke.py（真实事件驱动：改词/微调/译文/拆并句/导出 + **一键翻译三轮回归：补译保留人工译文、只补缺句、强制重译**，含 B1/B2 断言） |
+| frozen_entry.py / requirements-build.txt | **（v1.2 追加）PyInstaller 打包入口与构建依赖**：入口先走 GUI `main()`；带 `--selfcheck` 无窗口模式导入 tkinter/PyAV/ctranslate2/faster_whisper 并写 `studio-selfcheck.log`，构建机自动验收冻结包。`scripts/build-studio-exe.ps1` 一键出 onefile `SubtitleStudio.exe`（约 93MB，内嵌运行时，目标机免安装），`scripts/check-studio-exe-gui.ps1` 启动 GUI 截图举证。冻结态模型缓存：exe 同级 `hf-cache\`（便携，只读时退 `%LOCALAPPDATA%\MyLangLeanSubtitleStudio`），并显式固定 `HF_XET_CACHE/HF_XET_LOG_DIR` 防止 hf-xet 原生扩展往盘根乱建目录 |
 
-环境：`.tools\venvs\mll\Scripts\python.exe`（faster-whisper 1.2.1 / av 17.1 / pytest），运行模块需 `PYTHONPATH` 指向 `tools/subtitle-studio`。
+环境：`.tools\venvs\mll\Scripts\python.exe`（faster-whisper 1.2.1 / av 17.1 / pytest），运行模块需 `PYTHONPATH` 指向 `tools/subtitle-studio`；**翻译功能零新增依赖（urllib 标准库）**。
 模型：huggingface.co 与 hf-mirror 客户端在本机网络均不稳，用 `scripts/download-whisper-model.ps1`（Invoke-WebRequest 重试 + 手工落 hub 缓存），tiny/small 已就绪可离线。
-实测质量：sample.mp3（17.6s 干净英文 TTS）small 档 **WER 0%，边界 p90 0.092s，43/43 词落在 0.5s 内，rubric 5/5**。
+翻译端点实测（2026-09-29，本机网络）：MyMemory 1.1s 可达且译文正确（默认主通道）；translate.googleapis.com gtx 超时（留作海外降级）；有道旧 web 端点/Edge auth 已 404 弃用。
+实测质量：sample.mp3（17.6s 干净英文 TTS）small 档 **WER 0%，边界 p90 0.092s，43/43 词落在 0.5s 内，rubric 5/5**；其 4 句字幕经 MyMemory 真实翻译 4/4 成功（`.tools/studio-out/sample.zh.mll.json`），App 关联后双语/原文/盲听三态真机验收通过。
 
-GUI 两个关键坑（已修，回归断言守护）：①Treeview `selection_set` **同步**触发 `<<TreeviewSelect>>`，重建树必须 `_suspend_commit` 守卫，否则旧行 commit 覆盖结构编辑；②拆句产生的重复词必须靠跨句重叠校验拦截，否则能导出并破坏 App wordAt 二分。
+GUI 三个关键坑（已修，回归断言守护）：①Treeview `selection_set` **同步**触发 `<<TreeviewSelect>>`，重建树必须 `_suspend_commit` 守卫，否则旧行 commit 覆盖结构编辑；②拆句产生的重复词必须靠跨句重叠校验拦截，否则能导出并破坏 App wordAt 二分；③树重建后还会**异步**重发一次已选中行的选择事件，重复 commit 并把「翻译完成」状态条冲掉——`_on_select_segment` 对 `idx == current_seg` 的事件直接忽略。
+
+### 9.1 App 三态与机翻消费（v1.2）
+
+- 双语模式（`SubtitleMode.bilingual`）：句卡下方渲染 `seg.translation`。旧字幕全部无译文时不再静默退化成原文——顶部出现可关闭的中文横幅「当前字幕没有译文…可在电脑端字幕工坊一键翻译后重新关联」；仅部分句缺译时，缺译句原位显示浅色斜体占位「（暂无译文，可用字幕工坊补译后重新关联）」。
+- 盲听模式（`hidden`）：从单行静态提示升级为训练卡——默认全隐；「显示当前句」揭示播放位置所在句并随播放自动换句（换句重新隐藏），卡内可「看译文/隐藏译文」（仅有译文时出现）、单句循环、「继续盲听」收起。
+- 实体侧只增只读 getter：`TranscriptSegment.hasTranslation`、`Transcript.translatedCount/hasTranslations`；schema v1 不变。
+- 证据：`app/test/subtitle_modes_test.dart` 5 个 widget/单元用例；HBN-AL00 真机连续截图 `.tools/studio-out/dev-s4/s8/s9/s10/s11/s12/s13`（横幅→双语对照→盲听→揭示→看译文→原文）。
 
 ---
 
@@ -329,7 +340,7 @@ $env:JAVA_HOME = "$PWD\.tools\jdk17\jdk-17.0.2"          # 或先 dot-source use
 cd app
 ..\.tools\flutter\bin\flutter.bat pub get
 ..\.tools\flutter\bin\flutter.bat analyze                 # 仅 15 条既有 withOpacity info
-..\.tools\flutter\bin\flutter.bat test                    # 13/13
+..\.tools\flutter\bin\flutter.bat test                    # 18/18
 ..\.tools\flutter\bin\flutter.bat build apk --debug  --target-platform android-arm64
 ..\.tools\flutter\bin\flutter.bat build apk --release --target-platform android-arm64
 # 产物：app/build/app/outputs/flutter-apk/app-{debug,release}.apk
@@ -342,16 +353,28 @@ robocopy ..\ohos_supplement\entry .\ohos\entry /E                  # 合入自�
 
 # ---- 字幕工坊 ----
 $env:PYTHONPATH = "$PWD\tools\subtitle-studio"
-.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 7 passed
-.\.tools\venvs\mll\Scripts\python.exe tools\subtitle-studio\tests\gui_smoke.py
+.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 15 passed
+.\.tools\venvs\mll\Scripts\python.exe tools\subtitle-studio\tests\gui_smoke.py `
+  .tools\studio-out\sample.mll.json .tools\studio-out\sample.smoke.json
+# 识别+翻译一条龙（也支持直接翻译已有 JSON，默认跳过已有译文=断点续译）：
+.\.tools\venvs\mll\Scripts\python.exe -m mll_subtitles.cli sample.mp3 -t zh-CN
+.\.tools\venvs\mll\Scripts\python.exe -m mll_subtitles.cli sample.mll.json -t en --retranslate
 # 或资源管理器双击 tools\subtitle-studio\启动字幕工坊.bat
+
+# ---- 工坊打包免安装 exe（目标机无需 Python） ----
+powershell -ExecutionPolicy Bypass -File scripts\build-studio-exe.ps1
+# 产物 .tools\studio-exe\dist\SubtitleStudio.exe（onefile 约 93MB，首启 10-25s）
+# 构建末尾自动 --selfcheck（RESULT: OK）；GUI 启动截图：
+powershell -ExecutionPolicy Bypass -File scripts\check-studio-exe-gui.ps1
+# 证据：.tools\studio-out\exe-gui.png（标题/一键翻译控件完整）
 ```
 
 ---
 
 ## 13. 质量门与验收结论（2026-09-28）
 
-自动化：官方 `flutter test` **13/13**、`flutter analyze` 0 error/0 warning（仅既有 info）；OH fork `dart analyze` 零问题；字幕工坊 pytest **7/7** + GUI 真实事件冒烟通过；服务端 smoke 通过。
+自动化：官方 `flutter test` **18/18**、`flutter analyze` 0 error/0 warning（仅 15 条既有 info）；OH fork `dart analyze` 零问题；字幕工坊 pytest **15/15**（含 translator 8 项）+ GUI 真实事件冒烟通过（含一键翻译三轮回归）；服务端 smoke 通过。
+v1.2 增补真机验收（2026-09-29，同一台 HBN-AL00）：工坊 CLI 经 MyMemory 真实翻译 sample 4/4 成功 → adb 推送 → 条目「替换字幕」SAF 关联 → 播放页三态截图：**双语**（dev-s8，每句英文下中文译文+逐词高亮，无横幅）、**旧无译文字幕**（dev-s4，双语下中文引导横幅出现）、**盲听**（dev-s10 全隐 → s11 显示当前句且自动跟到末句 → s12 看译文出现「跟踪它，记录它…」）、**原文**（dev-s13，纯英文）。
 
 真机：**HBN-AL00（HarmonyOS 4.2 / AOSP 12 兼容层，序列号 2MN0224730027764，arm64）**，8 条验收标准全部 PASS：
 

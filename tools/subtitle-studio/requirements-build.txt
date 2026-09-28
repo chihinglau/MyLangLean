@@ -1,0 +1,4 @@
+# Build-only dependency for producing SubtitleStudio.exe.
+# Runtime needs stay in requirements.txt (faster-whisper); the frozen exe
+# bundles everything and end users never install this.
+pyinstaller>=6.0,<7.0

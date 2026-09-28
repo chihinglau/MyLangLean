@@ -137,3 +137,18 @@
 - **Test Requirements**:
   - `rule` TR-7.1: AC-1/AC-5/AC-6 各有真机证据（截图+logcat）；本设备兼容层屏蔽三方 logcat，已用连续截图（状态图标+进度数字+高亮词）与设备内索引/文件核对替代并注明；设备不可用时任务保持 in_progress 并注明 blocked 条件，不以自测顶替
   - `rule` TR-7.2: 官方 flutter analyze 无 error、测试全绿、OH analyze 零问题、两个 APK 产物时间戳更新；证据：命令输出
+
+## Task 8: 工坊一键机翻 + App 三态补全（v1.2）
+- **Status**: `done`
+- **Completion evidence**（2026-09-29，全程无人工干预）:
+  - 端点实测：Google gtx 超时、有道旧端点/Edge auth 404；**MyMemory 1.1s 可达且译文正确**，定为默认主通道，gtx 留作海外降级（可插拔链 + 每通道 2 次重试）。
+  - 新增 `mll_subtitles/translator.py`（标准库 urllib，零新增依赖）：normalize_lang、mymemory/google/libre 三 provider、translate_text 降级链、translate_transcript（跳过已有/force/失败保留/暂停节流/同语拒绝）；env：MLL_TRANSLATE_PROVIDER、MLL_TRANSLATOR_EMAIL、MLL_LIBRETRANSLATE_URL。
+  - GUI（studio.py）：控制条增「译成 zh-CN/en/ja/ko/fr/de/es/ru」+「一键翻译」+「全部重译」；Treeview 增「译文」列（✓）；后台线程 + queue 事件（translate_done/translate_error）+ 三按钮 busy 防重入；失败弹框列出句号、成功部分保留。顺手修复树重建后异步重发选择事件冲掉状态条的问题（idx==current_seg 忽略）。
+  - CLI（cli.py）：支持直接翻译已有 .mll.json；-t/--translate-to、--retranslate、--provider；部分失败退出码 3 但保存成功部分。
+  - App：transcript.dart 加 hasTranslation/translatedCount/hasTranslations；karaoke_subtitle.dart 双语无译文横幅（可关闭）+ 部分缺译逐句占位；盲听重做为 _BlindListenView（显示当前句/看译文/单句循环/继续盲听，随播放自动换句）。
+  - 自动化：pytest **15/15**（新增 test_translator.py 8 项，假 provider/假 HTTP 无网络）；gui_smoke 增三轮翻译回归（补译保留人工译文→只补缺句→强制重译）GUI_SMOKE_OK；flutter test **18/18**（新增 subtitle_modes_test.dart 5 用例）；flutter analyze 回到基线 15 条既有 withOpacity info（新代码用 withValues）。
+  - 真机（HBN-AL00，标准版 flutter + JDK17 构建 app-debug.apk 安装）：CLI 真实翻译 sample 4/4 → sample.zh.mll.json 推送 /sdcard/Download/mll-test/ → 条目菜单「替换字幕」SAF 选取 → toast「字幕已关联」。截图：dev-s4（旧无译文字幕→双语横幅）、dev-s8（双语 EN+ZH 逐词高亮）、dev-s10（盲听全隐+显示当前句按钮）、dev-s11（揭示后自动跟到末句 Shadow it…）、dev-s12（看译文「跟踪它，记录它，让它成为你的。」）、dev-s13（原文纯英文）。
+- **Priority**: `high`
+- **Depends On**: Task 5, Task 6, Task 7
+- **Acceptance Criteria Addressed**: AC-9, AC-10（spec v1.2 新增），并强化 F4/FR-3
+- **Notes**: schema v1 不冻结变更（translation 字段早已存在）；requirements.txt/启动 bat 无需改动。

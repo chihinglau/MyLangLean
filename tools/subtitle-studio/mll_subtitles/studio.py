@@ -22,11 +22,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:  # package-relative when launched as a module, flat when run as a file
     from .schema import Segment, Transcript, Word, validate
     from .transcriber import MODEL_SIZES, transcribe_file
+    from .translator import normalize_lang, translate_transcript
 except ImportError:  # pragma: no cover - direct script launch
     from schema import Segment, Transcript, Word, validate
     from transcriber import MODEL_SIZES, transcribe_file
+    from translator import normalize_lang, translate_transcript
 
 LANGUAGES = ("自动检测", "en", "zh", "ja", "ko", "de", "fr", "es", "ru")
+# Keyless translation targets offered in the GUI (zh-CN is the default:
+# the app's bilingual view pairs foreign audio with Chinese glosses).
+TARGET_LANGS = ("zh-CN", "en", "ja", "ko", "fr", "de", "es", "ru")
 
 
 class Studio(tk.Tk):
@@ -94,21 +99,37 @@ class Studio(tk.Tk):
                      state="readonly").grid(row=2, column=1, sticky=tk.W,
                                             padx=4, pady=(6, 0))
 
+        ttk.Label(bar, text="译成").grid(row=2, column=2, sticky=tk.E,
+                                         pady=(6, 0))
+        self.target_var = tk.StringVar(value="zh-CN")
+        ttk.Combobox(bar, textvariable=self.target_var, values=TARGET_LANGS,
+                     width=7, state="readonly").grid(
+            row=2, column=3, sticky=tk.W, padx=4, pady=(6, 0))
+        self.translate_btn = ttk.Button(
+            bar, text="一键翻译", command=self.start_translate)
+        self.translate_btn.grid(row=2, column=4, padx=6, pady=(6, 0))
+        self.retranslate_btn = ttk.Button(
+            bar, text="全部重译",
+            command=lambda: self.start_translate(force=True))
+        self.retranslate_btn.grid(row=2, column=5, padx=4, pady=(6, 0))
+
     def _build_body(self):
         paned = ttk.Panedwindow(self, orient=tk.VERTICAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
 
         # Segment list -----------------------------------------------------
         top = ttk.Frame(paned)
-        cols = ("idx", "range", "text")
+        cols = ("idx", "range", "text", "trans")
         self.seg_tree = ttk.Treeview(top, columns=cols, show="headings",
                                      height=8, selectmode="browse")
         self.seg_tree.heading("idx", text="句")
         self.seg_tree.heading("range", text="时间 (秒)")
         self.seg_tree.heading("text", text="原文")
+        self.seg_tree.heading("trans", text="译文")
         self.seg_tree.column("idx", width=50, anchor=tk.CENTER)
         self.seg_tree.column("range", width=170, anchor=tk.CENTER)
-        self.seg_tree.column("text", width=700)
+        self.seg_tree.column("text", width=640)
+        self.seg_tree.column("trans", width=44, anchor=tk.CENTER)
         vs = ttk.Scrollbar(top, orient=tk.VERTICAL,
                            command=self.seg_tree.yview)
         self.seg_tree.configure(yscrollcommand=vs.set)
@@ -192,13 +213,42 @@ class Studio(tk.Tk):
                     self._set_busy(False)
                     self._set_status("识别失败")
                     messagebox.showerror("识别失败", str(payload))
+                elif kind == "translate_done":
+                    done, already, failed = payload
+                    self._set_busy(False)
+                    sel = self.current_seg
+                    self._refresh_segments(
+                        select=sel if 0 <= sel < len(
+                            self.transcript.segments) else 0)
+                    if failed:
+                        nums = "、".join(str(i + 1) for i in failed[:10])
+                        self._set_status(
+                            f"翻译结束：新译 {done} 句，{len(failed)} 句失败"
+                            "（成功部分已保留，可再点一键翻译重试）。")
+                        messagebox.showwarning(
+                            "部分句子翻译失败",
+                            f"新译 {done} 句，失败 {len(failed)} 句"
+                            f"（第 {nums} 句）。\n\n"
+                            "成功的译文已保留，可再次点击「一键翻译」重试，"
+                            "或手工在下方译文栏补译。")
+                    else:
+                        self._set_status(
+                            f"翻译完成：本次新译 {done} 句"
+                            f"（跳过已有译文 {already} 句）。")
+                elif kind == "translate_error":
+                    self._set_busy(False)
+                    self._set_status("翻译失败")
+                    messagebox.showerror("翻译失败", str(payload))
         except queue.Empty:
             pass
         self.after(150, self._drain_events)
 
     def _set_busy(self, busy):
         self._busy = busy
-        self.run_btn.configure(state=tk.DISABLED if busy else tk.NORMAL)
+        state = tk.DISABLED if busy else tk.NORMAL
+        self.run_btn.configure(state=state)
+        self.translate_btn.configure(state=state)
+        self.retranslate_btn.configure(state=state)
 
     # ------------------------------------------------------------ actions
 
@@ -250,6 +300,50 @@ class Studio(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def start_translate(self, force=False, providers=None, pause=0.4):
+        """Translate every segment on a background thread.
+
+        Existing non-empty translations are kept unless *force* is set
+        (manual corrections survive re-runs). *providers* / *pause* exist
+        for the automated GUI smoke test (injected fake, no real network).
+        """
+        if self._busy:
+            return
+        t = self.transcript
+        if not t or not t.segments:
+            messagebox.showinfo("提示", "请先「开始识别」或「打开字幕(JSON)」，再翻译")
+            return
+        target = self.target_var.get().strip()
+        source = normalize_lang(t.language)
+        if source != "auto" and normalize_lang(target) == source:
+            messagebox.showerror(
+                "无需翻译",
+                f"字幕语言（{source}）与目标译文语言相同，请换一个目标语言。")
+            return
+        pending = sum(1 for s in t.segments
+                      if force or not (s.translation or "").strip())
+        if pending == 0:
+            if not messagebox.askyesno(
+                    "重新翻译", "所有句子都已有译文，是否全部重新翻译？\n"
+                               "（手工修改的译文也会被覆盖）"):
+                return
+            force = True
+        self._commit_current_segment()
+        self._set_busy(True)
+        self._set_status(f"翻译中：{source or '自动检测'} → {target}，"
+                         f"共 {pending} 句（日志见下方）…")
+
+        def work():
+            try:
+                stats = translate_transcript(
+                    t, target, force=force, providers=providers,
+                    log=lambda m: self._post("log", m), pause=pause)
+                self._post("translate_done", stats)
+            except Exception as e:  # including the same-language guard
+                self._post("translate_error", e)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def export(self):
         self._commit_current_segment()
         t = self.transcript
@@ -296,7 +390,8 @@ class Studio(tk.Tk):
                 self.seg_tree.insert(
                     "", tk.END, iid=str(i),
                     values=(i + 1, f"{seg.start:7.2f} – {seg.end:7.2f}",
-                            seg.text))
+                            seg.text, "✓" if (seg.translation or "").strip()
+                            else ""))
             if select >= 0 and str(select) in self.seg_tree.get_children():
                 self.seg_tree.selection_set(str(select))
         finally:
@@ -309,11 +404,16 @@ class Studio(tk.Tk):
     def _on_select_segment(self, _evt):
         if self._suspend_commit:
             return
-        self._commit_current_segment()
         sel = self.seg_tree.selection()
         if not sel:
             return
         idx = int(sel[0])
+        # A tree rebuild re-announces the already-loaded row asynchronously;
+        # ignore it so the editor isn't re-committed and the operation's
+        # status message (e.g. 翻译完成) isn't clobbered by live validation.
+        if idx == self.current_seg:
+            return
+        self._commit_current_segment()
         self._load_segment(idx)
         self._live_validate()
 

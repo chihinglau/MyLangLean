@@ -3,15 +3,42 @@
 
 Exercises the real GUI code paths without a human: load a recognised
 transcript, fix a word, nudge timings, add a translation, split/merge a
-sentence, then run the same validate + export pipeline as the 导出字幕 button.
+sentence, run the one-click machine-translation worker with an injected
+provider, then run the same validate + export pipeline as 导出字幕.
 
 Run with PYTHONPATH pointing at tools/subtitle-studio:
     python tools/subtitle-studio/tests/gui_smoke.py <in.json> <out.json>
 """
 import sys
+import time
 
-from mll_subtitles import studio
+from mll_subtitles import studio, translator
 from mll_subtitles.schema import Transcript, validate
+
+
+def _pump_until_idle(app, seconds=10):
+    deadline = time.time() + seconds
+    while app._busy and time.time() < deadline:
+        app.update()
+        time.sleep(0.02)
+    app.update()
+    assert not app._busy, "background worker did not finish in time"
+
+
+def _install_fake_translator(marker):
+    """Redirect the studio worker's translate_transcript at the real
+    implementation but with a keyless in-memory provider (no network)."""
+    real = translator.translate_transcript
+
+    def fake_provider(text, src, tgt):
+        return marker + text
+
+    def patched(t, target_lang, **kwargs):
+        return real(t, target_lang, providers=[fake_provider], pause=0,
+                    force=kwargs.get("force", False),
+                    log=kwargs.get("log", print))
+
+    studio.translate_transcript = patched
 
 
 def main(in_path: str, out_path: str) -> int:
@@ -91,6 +118,39 @@ def main(in_path: str, out_path: str) -> int:
     assert check.segments[0].words[0].w == "Real!"
     assert check.segments[0].translation == "真实的声音让语言鲜活起来。"
     assert len(check.segments) == n0
+
+    # --- one-click translation regression (fake provider, no network) -----
+    _install_fake_translator("[V1]")
+    app.target_var.set("zh-CN")
+    # Segment 0 carries the manual translation above; it must be preserved.
+    app.start_translate()
+    _pump_until_idle(app)
+    assert "翻译完成" in app.status_var.get()
+    assert app.transcript.segments[0].translation == "真实的声音让语言鲜活起来。"
+    for i, s in enumerate(app.transcript.segments):
+        if i == 0:
+            continue
+        assert s.translation and s.translation.startswith("[V1]"), \
+            "segment %d was not translated: %r" % (i, s.translation)
+    # The tree's 译文 column now marks every row and the editor reloaded.
+    for i in range(n0):
+        assert app.seg_tree.item(str(i), "values")[3] == "✓"
+    assert app.translation_var.get()  # current segment editor refreshed
+
+    # Only missing sentences are translated: wipe one and re-run with V2.
+    app.transcript.segments[2].translation = None
+    _install_fake_translator("[V2]")
+    app.start_translate()
+    _pump_until_idle(app)
+    assert app.transcript.segments[2].translation.startswith("[V2]")
+    assert app.transcript.segments[1].translation.startswith("[V1]")
+    assert app.transcript.segments[0].translation == "真实的声音让语言鲜活起来。"
+
+    # 全部重译 (force=True) overwrites machine output AND manual corrections.
+    app.start_translate(force=True)
+    _pump_until_idle(app)
+    assert all(s.translation.startswith("[V2]")
+               for s in app.transcript.segments)
 
     app.update()
     app.destroy()

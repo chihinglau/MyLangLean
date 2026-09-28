@@ -6,6 +6,7 @@ with faster-whisper), so no external ffmpeg binary is needed.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Callable, List, Optional
 
 try:
@@ -13,13 +14,51 @@ try:
 except ImportError:  # direct script launch (python mll_subtitles/transcriber.py)
     from schema import Transcript
 
-# Keep the model cache inside the repo (.tools/hf-cache) unless the user has
-# configured HF_HOME/HF_HUB_CACHE explicitly. Must be set before
+
+def _writable_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, ".write-probe")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _default_hf_cache() -> str:
+    """Where Whisper models live.
+
+    * Source checkout: inside the repo at ``.tools/hf-cache``.
+    * Frozen exe (PyInstaller): a portable ``hf-cache`` folder next to the
+      exe when that directory is writable, otherwise a per-user folder under
+      LOCALAPPDATA (covers installs under Program Files).
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        portable = os.path.join(exe_dir, "hf-cache")
+        if _writable_dir(portable):
+            return portable
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "MyLangLeanSubtitleStudio", "hf-cache")
+    repo_root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    return os.path.join(repo_root, ".tools", "hf-cache")
+
+
+# Keep the model cache in a known local folder unless the user has
+# configured HF_HOME/HUGGINGFACE_HUB_CACHE explicitly. Must be set before
 # faster_whisper/huggingface_hub are imported.
-_REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if not os.environ.get("HF_HOME") and not os.environ.get("HUGGINGFACE_HUB_CACHE"):
-    os.environ["HF_HOME"] = os.path.join(_REPO_ROOT, ".tools", "hf-cache")
+_HF_HOME = os.environ.get("HF_HOME")
+if not _HF_HOME and not os.environ.get("HUGGINGFACE_HUB_CACHE"):
+    _HF_HOME = _default_hf_cache()
+    os.environ["HF_HOME"] = _HF_HOME
+# hf_xet otherwise scribbles a <drive>:\hf_cache tree at import time; keep
+# its cache/log folder under the effective HF home. Env names come from the
+# hf-xet native extension (HF_XET_CACHE / HF_XET_LOG_DIR).
+os.environ.setdefault("HF_XET_CACHE", os.path.join(_HF_HOME, "xet"))
+os.environ.setdefault("HF_XET_LOG_DIR", os.path.join(_HF_HOME, "xet", "logs"))
 
 # Default to the China-accessible HuggingFace mirror; users can override by
 # setting HF_ENDPOINT before launching.

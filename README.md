@@ -17,7 +17,7 @@
 | 字幕模式 | 原文 / 双语 / 盲听三态，5 档字号 |
 | 精听 | 单句 AB 循环、0.6–1.5× 变速（原生 MediaPlayer 计时） |
 | 跟读 | AAC 录音 + V1 启发式评分（节奏/流利/语调） |
-| 字幕工坊（PC） | faster-whisper 逐词识别（tiny/small 可离线）、词/句级 GUI 校对、译文、校验、一键导出 App 同 schema |
+| 字幕工坊（PC） | faster-whisper 逐词识别（tiny/small 可离线）、词/句级 GUI 校对、**一键机翻（免 key，默认 MyMemory）**、校验、一键导出 App 同 schema |
 | 账户/额度 | JWT 设备游客、每月 6000 秒额度、幂等计费（服务端 smoke 全通过） |
 | 容错空态 | 无字幕 / 字幕损坏 / 媒体无法播放 / 无文件管理器，全部中文引导，不无限转圈 |
 
@@ -40,7 +40,7 @@
 cd app
 flutter pub get
 flutter analyze                              # 0 error / 0 warning（仅少量既有 info）
-flutter test                                 # 13/13
+flutter test                                 # 18/18
 flutter build apk --release --target-platform android-arm64
 # 产物：app\build\app\outputs\flutter-apk\app-release.apk（约 17MB）
 adb install -r build\app\outputs\flutter-apk\app-release.apk
@@ -53,13 +53,33 @@ adb install -r build\app\outputs\flutter-apk\app-release.apk
 ```powershell
 # 双击 tools\subtitle-studio\启动字幕工坊.bat，或：
 $env:PYTHONPATH = "$PWD\tools\subtitle-studio"
-.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 7 passed
+.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 15 passed
 .\.tools\venvs\mll\Scripts\python.exe -m mll_subtitles.cli --help
+
+# 识别后直接翻译（-t 目标语言）；也可只翻译已有字幕 JSON（断点续译，默认跳过已有译文）
+.\.tools\venvs\mll\Scripts\python.exe -m mll_subtitles.cli `
+  .tools\studio-out\sample.mll.json -o .tools\studio-out\sample.zh.mll.json -t zh-CN
 ```
 
-工坊 GUI：打开媒体 → 选模型档位（tiny/small，离线缓存）→ 识别 → 词/句级校对与译文 →
+工坊 GUI：打开媒体 → 选模型档位（tiny/small，离线缓存）→ 识别 → 词/句级校对 →
+「一键翻译」（译成 zh-CN/en/ja/ko 等，已有译文自动保留，失败可重跑续译）→
 默认导出到媒体同目录的同名 `.mll.json`。手机端导入媒体时选择该文件配对即可。
-实测 sample.mp3 用 small 档：**WER 0%，词边界 p90 误差 0.092s**。
+翻译默认走免 key 的 MyMemory（海外可自动降级 Google gtx，亦可自建 LibreTranslate），
+实测 sample.mp3 用 small 档：**WER 0%，词边界 p90 误差 0.092s，4 句机翻全部成功**。
+
+#### 打包成免安装 exe（分发给没有 Python 的电脑）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-studio-exe.ps1
+# 产物：.tools\studio-exe\dist\SubtitleStudio.exe（约 93MB，单文件双击即用）
+# 构建末尾自动跑 --selfcheck；另有 GUI 启动截图验证：
+powershell -ExecutionPolicy Bypass -File scripts\check-studio-exe-gui.ps1
+```
+
+- PyInstaller onefile 内嵌 Python 3.10 + faster-whisper/ctranslate2/PyAV(ffmpeg)/tkinter，
+  **目标机无需安装任何运行时**；首启自解压约 10–25 秒属正常现象（`-Directory` 可出启动更快的目录版）。
+- Whisper 模型不打进 exe：首次识别时自动下载到 `exe 同级\hf-cache\`（便携）；
+  目录只读时退到 `%LOCALAPPDATA%\MyLangLeanSubtitleStudio\hf-cache`；已设全局 `HF_HOME` 则沿用。
 
 ### 方式三：桌面调试（无设备）
 
@@ -89,18 +109,18 @@ MyLangLean/
 │  ├─ lib/features         discover / library / player / shadowing / history / auth
 │  ├─ android/             Gradle + Kotlin 插件（MediaPlayer/SAF/MediaRecorder）
 │  ├─ ohos/                hvigor + ArkTS 插件（AVPlayer/AVSession，生成物不入库）
-│  └─ test/                13 个测试用例 + 工坊 JSON fixture
-├─ tools/subtitle-studio/  ★PC 字幕工坊（mll_subtitles：schema/transcriber/cli/studio）
+│  └─ test/                18 个测试用例 + 工坊 JSON fixture
+├─ tools/subtitle-studio/  ★PC 字幕工坊（mll_subtitles：schema/transcriber/translator/cli/studio）
 ├─ ohos_supplement/        生成 ohos 宿主后合入的 ArkTS 插件与权限
 ├─ server/                 FastAPI：认证/额度/转写/翻译/评分/发现代理
-├─ scripts/                环境切换、模型下载、测试音视频制备
+├─ scripts/                环境切换、模型下载、测试音视频制备、工坊 exe 打包/自检
 ├─ docs/                   软件设计方案（含真机联调调试手册）
 └─ .trae/specs/            字幕工坊需求 spec、任务与评审/验收记录
 ```
 
 ## 🖱️ 典型使用流程
 
-1. PC 上用字幕工坊打开音视频 → 识别 → 校对/加译文 → 得到 `xxx.mll.json`；
+1. PC 上用字幕工坊打开音视频 → 识别 → 校对 → 一键翻译（或手填译文）→ 得到 `xxx.mll.json`；
 2. 把媒体与 json 传到手机（adb push 到 Download，或微信/USB）；
 3. App「资料库 → 导入音视频」选媒体，弹框选「选择字幕」配对；
 4. 播放：逐词高亮、点词定位、单句循环、变速、盲听；
