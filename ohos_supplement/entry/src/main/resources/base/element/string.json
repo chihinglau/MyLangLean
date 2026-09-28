@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "AI podcast shadowing coach"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "MyLangLean"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "MyLangLean"
+    },
+    {
+      "name": "permission_mic_reason",
+      "value": "Records your voice for shadowing practice and scoring"
+    },
+    {
+      "name": "permission_background_reason",
+      "value": "Keeps podcast audio playing on the lock screen"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "AI 播客跟读学习"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "MyLangLean"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "MyLangLean"
+    },
+    {
+      "name": "permission_mic_reason",
+      "value": "用于影子跟读时录制你的发音并进行评分"
+    },
+    {
+      "name": "permission_background_reason",
+      "value": "用于锁屏和后台继续播放播客音频"
+    }
+  ]
+}

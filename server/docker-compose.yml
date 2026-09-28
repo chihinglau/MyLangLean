@@ -1,0 +1,22 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MLL_ASR_BACKEND: stub
+    # When GPU worker is ready, switch ASR backend and add worker services:
+    # MLL_ASR_BACKEND: faster_whisper
+  # worker:
+  #   build: .
+  #   command: python -m app.workers.rq_worker
+  #   environment:
+  #     MLL_ASR_BACKEND: faster_whisper
+  #     MLL_ASR_DEVICE: cuda
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]

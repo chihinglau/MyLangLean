@@ -1,0 +1,58 @@
+# ---- Flutter / Dart ----
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+*.iml
+*.ipr
+*.iws
+.idea/
+.vscode/
+**/doc/api/
+app.*.symbols
+app.*.map.json
+# 注：应用包的 pubspec.lock 需要入库保证可复现，不全局忽略
+
+# ---- Android / HarmonyOS 本机配置与产物 ----
+local.properties
+*.hap
+*.hsp
+*.app
+oh_modules/
+node_modules/
+.hvigor/
+.cxx/
+# app/ohos 内另带官方模板 .gitignore（含 generated flutter_assets 等）
+
+# ---- 签名材料 / 密钥 ----
+*.p12
+*.p7b
+*.jks
+*.keystore
+*.cer
+*.crt
+.tools/signing/
+
+# ---- 本地工具链与大体积产物（全部在工作区，不入库） ----
+.tools/
+
+# ---- Python（字幕工坊 / 服务端） ----
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+server/.venv/
+.venv/
+.env
+.venv*/
+
+# ---- 日志 / 临时文件 ----
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- 本地操作手册（含凭据提取流程，不公开入库） ----
+docs/skill_github_repo_access.md
