@@ -66,9 +66,63 @@ def _selfcheck() -> int:
     return 0 if ok else 1
 
 
+def _opt(name: str, default=None):
+    """Read ``--name value`` / ``--name=value`` from argv."""
+    for i, arg in enumerate(sys.argv):
+        if arg == name and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return default
+
+
+def _headless_transcribe() -> int:
+    """Hidden batch mode: ``--transcribe media --out file [--model s --lang en]``.
+
+    The exe is built as a windowed app, so stdout may be None; mirror every
+    log line into ``<out>.log`` instead.
+    """
+    media = _opt("--transcribe")
+    out = _opt("--out")
+    model = _opt("--model", "small")
+    lang = _opt("--lang") or None
+    if not media or not out:
+        sys.stderr.write("--transcribe and --out are required\n")
+        return 2
+
+    log_f = open(out + ".log", "w", encoding="utf-8")
+
+    def log(msg: str) -> None:
+        log_f.write(str(msg) + "\n")
+        log_f.flush()
+        try:
+            print(msg, flush=True)
+        except Exception:
+            pass
+
+    try:
+        from mll_subtitles.transcriber import transcribe_file
+        from mll_subtitles.schema import validate
+
+        t = transcribe_file(media, model_size=model, language=lang, log=log)
+        errors = validate(t)
+        t.save_json(out)
+        log(f"saved: {out}")
+        log(f"segments={len(t.segments)} duration={t.duration:.1f}s "
+            f"validate={'OK' if not errors else errors}")
+        return 0 if not errors else 4
+    except Exception:
+        log(traceback.format_exc())
+        return 1
+    finally:
+        log_f.close()
+
+
 def main() -> int:
     if "--selfcheck" in sys.argv:
         return _selfcheck()
+    if "--transcribe" in sys.argv:
+        return _headless_transcribe()
     from mll_subtitles.studio import main as gui_main
 
     gui_main()

@@ -1,6 +1,6 @@
 # OORA 复刻版（MyLangLean）软件设计方案
 
-> 版本：v1.2 ｜ 日期：2026-09-29（v1.1 2026-09-28；v1.0 初稿 2026-09-27）
+> 版本：v1.3 ｜ 日期：2026-09-29（v1.3 识别无时长上限+歌曲兜底；v1.2 2026-09-29；v1.1 2026-09-28；v1.0 初稿 2026-09-27）
 > 目标平台：HarmonyOS 4.2.0（设计目标）｜ 现阶段可运行平台：**同机 AOSP 12 兼容层（Android arm64 APK，已真机验收）**
 > 预留移植：iOS 13+
 > 参考产品：https://oora.yoshinn.com.cn/#product
@@ -13,6 +13,7 @@
 | v1.0 | 2026-09-27 | 产品拆解、技术选型、PAL 架构、服务端 API、鸿蒙适配、里程碑 |
 | v1.1 | 2026-09-28 | 按实际落地更新：双 Flutter 工具链、Android PAL 三件套、本地媒体库持久化、**字幕工坊**（PC 侧逐词字幕生产工具）、HarmonyOS 消费机 HAP 安装阻断的实测结论、**第 14 章真机联调环境与调试方法**、8 条验收标准全部 PASS 的证据链 |
 | v1.2 | 2026-09-29 | **字幕工坊一键机翻**（translator.py：免 key MyMemory 主通道 + Google/LibreTranslate 降级，断点续译不覆盖人工译文；GUI 目标语言/进度/重译，CLI `-t/--translate-to/--retranslate`）；**App 三态补全**：双语模式无译文横幅与逐句缺译占位、盲听升级为「显示当前句/看译文/单句循环」训练卡；pytest 15 项、flutter test 18 项全绿，HBN-AL00 真机三态截图验收；**工坊可 PyInstaller 打包为免安装单文件 SubtitleStudio.exe（约 93MB，--selfcheck + GUI 截图双重自测通过）** |
+| v1.3 | 2026-09-29 | **识别无时长上限 + 歌曲/强背景音乐兜底**：实测发现 Silero VAD 会把伴奏中的演唱判为非人声（3:53 FLAC 只出 8 句、止于约 49s）；改为「VAD 首遍 → 覆盖率<60% 自动无 VAD 全音频重识别（带多语种通用音乐风格提示找回前奏演唱）→ 按词间停顿把长段整理成歌词行」；schema 入库修复零时长词时间戳；frozen_entry 增加隐藏 `--transcribe` 无界面批处理参数（冻结产物可端到端自测）。证据：歌曲 small 档 52 句覆盖 233.4s + 翻译 52/52（新 exe 直跑 EXIT=0/validate OK）、10 分 16 秒口播 134 句无截断（走单次 VAD 无额外开销）、pytest 18 项全绿 |
 
 ---
 
@@ -274,14 +275,14 @@ SAF 选媒体(uri) ──后台线程复制──▶ filesDir/imports/<name>（�
 
 | 模块 | 内容 |
 |---|---|
-| transcriber.py | faster-whisper 封装（tiny/small 档、int8/float32 精度、语言可指定、PyAV 直接解音视频）；启动时把 HF_HOME 指向工作区 `.tools/hf-cache`（import faster_whisper **之前**设置） |
+| transcriber.py | faster-whisper 封装（tiny/small 档、int8/float32 精度、语言可指定、PyAV 直接解音视频）；启动时把 HF_HOME 指向工作区 `.tools/hf-cache`（import faster_whisper **之前**设置）。**（v1.3）无时长上限**：`clip_timestamps="0"` 始终处理整段，`condition_on_previous_text=False` 防长音频重复循环；**VAD 覆盖率兜底**：VAD 首遍后末句覆盖不足 60%（文件≥20s，典型于歌曲被误判非人声）自动无 VAD 全音频重识别、钉住已检测语言并加 `_MUSIC_PROMPTS`（8 语种通用音乐风格提示，不含真实歌词防注入），两版取覆盖更长者，无 VAD 结果再过 `split_by_word_gaps` |
 | translator.py | **（v1.2 新增）** 免 key 机器翻译：可插拔 provider 链（默认 `mymemory,google`，均标准库 urllib；另支持自建 LibreTranslate），每通道 2 次重试+自动降级、句间 0.4s 节流；**默认跳过已有非空译文（断点续译、人工译文不被覆盖）**，`force=True` 才重译；源语言=目标语言直接拒绝；env 可配 `MLL_TRANSLATE_PROVIDER` / `MLL_TRANSLATOR_EMAIL`（MyMemory 提额）/ `MLL_LIBRETRANSLATE_URL` |
-| schema.py | Segment/Word/Transcript dataclass、from_whisper 映射、validate、save_json（indent=2, ensure_ascii=False，与 App 同格式）；`translation` 字段 v1 即存在，机翻直接写入无需改 schema 版本 |
+| schema.py | Segment/Word/Transcript dataclass、from_whisper 映射、validate、save_json（indent=2, ensure_ascii=False，与 App 同格式）；`translation` 字段 v1 即存在，机翻直接写入无需改 schema 版本。**（v1.3）**`from_whisper` 入库时 `_repair_word_times` 把无 VAD 歌声路径偶发的 start==end 零时长词在 ±20ms 内修复（不跨邻词/跨句）；`split_by_word_gaps` 在词间停顿 ≥0.9s（或跨 12s 长句遇 ≥0.35s 停顿）处把大段切成歌词行，紧凑口播不受影响 |
 | studio.py | tkinter GUI：打开媒体/模型档/语言/识别；按句 Treeview 词表（词/起止/置信度行内编辑、±0.05s 微调），**「译文」列以 ✓ 标识已译句**；句译文、加词/删词/拆句/合并；后台线程识别+队列刷新；实时校验；**控制条增「译成」目标语言（zh-CN/en/ja/ko/fr/de/es/ru）+「一键翻译」（仅补缺译句）+「全部重译」，后台线程翻译、日志区进度、失败句保留成功部分并可续跑**；导出默认媒体同目录同名 `.mll.json` |
 | cli.py | 命令行批处理（含 --compute-type）；**v1.2 起输入可以是已有 `.mll.json`（只翻译模式，输出默认 `*.zh-CN.mll.json`）；`-t/--translate-to`、`--retranslate`、`--provider`；部分失败退出码 3 但已保存成功部分** |
 | eval_quality.py | 质量评估：WER + 词边界误差（mean/p90/0.5s 命中率） |
-| tests/ | test_schema.py（7 项）、**test_translator.py（8 项：语言码归一、gtx 响应解析、MyMemory 解析/额度、降级链、重试、跳过/覆盖/失败保留/同语拒绝，全程假 provider 无网络）**、gui_smoke.py（真实事件驱动：改词/微调/译文/拆并句/导出 + **一键翻译三轮回归：补译保留人工译文、只补缺句、强制重译**，含 B1/B2 断言） |
-| frozen_entry.py / requirements-build.txt | **（v1.2 追加）PyInstaller 打包入口与构建依赖**：入口先走 GUI `main()`；带 `--selfcheck` 无窗口模式导入 tkinter/PyAV/ctranslate2/faster_whisper 并写 `studio-selfcheck.log`，构建机自动验收冻结包。`scripts/build-studio-exe.ps1` 一键出 onefile `SubtitleStudio.exe`（约 93MB，内嵌运行时，目标机免安装），`scripts/check-studio-exe-gui.ps1` 启动 GUI 截图举证。冻结态模型缓存：exe 同级 `hf-cache\`（便携，只读时退 `%LOCALAPPDATA%\MyLangLeanSubtitleStudio`），并显式固定 `HF_XET_CACHE/HF_XET_LOG_DIR` 防止 hf-xet 原生扩展往盘根乱建目录 |
+| tests/ | test_schema.py（**10 项**：原 7 项 + v1.3 零时长词修复、词间隙拆句、紧凑语音不拆）、**test_translator.py（8 项：语言码归一、gtx 响应解析、MyMemory 解析/额度、降级链、重试、跳过/覆盖/失败保留/同语拒绝，全程假 provider 无网络）**、gui_smoke.py（真实事件驱动：改词/微调/译文/拆并句/导出 + **一键翻译三轮回归：补译保留人工译文、只补缺句、强制重译**，含 B1/B2 断言） |
+| frozen_entry.py / requirements-build.txt | **（v1.2 追加）PyInstaller 打包入口与构建依赖**：入口先走 GUI `main()`；带 `--selfcheck` 无窗口模式导入 tkinter/PyAV/ctranslate2/faster_whisper 并写 `studio-selfcheck.log`，构建机自动验收冻结包；**（v1.3）`--transcribe <媒体> --out <json> [--model small] [--lang en]` 隐藏无界面批处理**（windowed 包 stdout 可能为空，日志镜像到 `<out>.log`，validate 失败退 4），可直接对冻结 exe 做端到端识别自测。`scripts/build-studio-exe.ps1` 一键出 onefile `SubtitleStudio.exe`（约 93MB，内嵌运行时，目标机免安装），`scripts/check-studio-exe-gui.ps1` 启动 GUI 截图举证。冻结态模型缓存：exe 同级 `hf-cache\`（便携，只读时退 `%LOCALAPPDATA%\MyLangLeanSubtitleStudio`），并显式固定 `HF_XET_CACHE/HF_XET_LOG_DIR` 防止 hf-xet 原生扩展往盘根乱建目录 |
 
 环境：`.tools\venvs\mll\Scripts\python.exe`（faster-whisper 1.2.1 / av 17.1 / pytest），运行模块需 `PYTHONPATH` 指向 `tools/subtitle-studio`；**翻译功能零新增依赖（urllib 标准库）**。
 模型：huggingface.co 与 hf-mirror 客户端在本机网络均不稳，用 `scripts/download-whisper-model.ps1`（Invoke-WebRequest 重试 + 手工落 hub 缓存），tiny/small 已就绪可离线。
@@ -296,6 +297,19 @@ GUI 三个关键坑（已修，回归断言守护）：①Treeview `selection_se
 - 盲听模式（`hidden`）：从单行静态提示升级为训练卡——默认全隐；「显示当前句」揭示播放位置所在句并随播放自动换句（换句重新隐藏），卡内可「看译文/隐藏译文」（仅有译文时出现）、单句循环、「继续盲听」收起。
 - 实体侧只增只读 getter：`TranscriptSegment.hasTranslation`、`Transcript.translatedCount/hasTranslations`；schema v1 不变。
 - 证据：`app/test/subtitle_modes_test.dart` 5 个 widget/单元用例；HBN-AL00 真机连续截图 `.tools/studio-out/dev-s4/s8/s9/s10/s11/s12/s13`（横幅→双语对照→盲听→揭示→看译文→原文）。
+
+### 9.2 无时长上限与歌曲/强背景音乐兜底（v1.3）
+
+问题：用户用 exe 识别 3:53 的 FLAC 歌曲（Westlife《My Love》）只得到 8 句、内容止于约 49s，看似"时长被限制"。对照实验定位（tiny/small 双档）：代码从未设过时长上限——真因是 faster-whisper 的 Silero VAD 把母带伴奏中的演唱持续判为非人声，阈值从 0.5 降到 0.08 覆盖率仍只有 53%；关闭 VAD 后 42 句覆盖到 227s。此外 small 档在无 VAD 时会漏前奏上的首主歌（解码策略对照确认非 no_speech/hallucination 阈值所致），加入通用音乐风格 `initial_prompt` 后完整找回（"An empty street, an empty house…"）且无提示词串入。
+
+策略（全部封装在 `transcribe_file`，GUI/CLI/exe 三端同路径）：
+
+1. 首遍 VAD（口播/播客最优，单次成本）；日志始终显示总时长与"无时长上限"。
+2. 文件 ≥20s 且末句覆盖 <60% → 日志告警并自动无 VAD 全音频重识别（钉住语言、加该语种通用音乐提示），两版取覆盖更长者。
+3. 无 VAD 结果过 `split_by_word_gaps`：词间 ≥0.9s 停顿（长句 ≥12s 时 ≥0.35s 也切）整理成歌词行；紧凑口播零影响。
+4. `_repair_word_times`：无 VAD 偶发零时长词（start==end）在 ±20ms 内修复且不跨邻词，保证 App 卡拉 OK 高亮不串行。
+
+实测：该歌曲 small 档（**冻结 exe 直跑** `--transcribe`）52 句覆盖 233.4s、最长句 7.1s、validate OK、MyMemory 翻译 52/52（产物 `.tools/studio-out/mylove.exe.mll.json` 及 `.zh` 版）；10 分 16 秒循环口播 134 句覆盖 616.9s（VAD 单遍命中，无兜底开销）；sample.mp3 质量门仍 WER 0%/5/5；pytest 18/18、gui_smoke 通过。
 
 ---
 
@@ -353,7 +367,7 @@ robocopy ..\ohos_supplement\entry .\ohos\entry /E                  # 合入自�
 
 # ---- 字幕工坊 ----
 $env:PYTHONPATH = "$PWD\tools\subtitle-studio"
-.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 15 passed
+.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 18 passed
 .\.tools\venvs\mll\Scripts\python.exe tools\subtitle-studio\tests\gui_smoke.py `
   .tools\studio-out\sample.mll.json .tools\studio-out\sample.smoke.json
 # 识别+翻译一条龙（也支持直接翻译已有 JSON，默认跳过已有译文=断点续译）：
@@ -367,13 +381,16 @@ powershell -ExecutionPolicy Bypass -File scripts\build-studio-exe.ps1
 # 构建末尾自动 --selfcheck（RESULT: OK）；GUI 启动截图：
 powershell -ExecutionPolicy Bypass -File scripts\check-studio-exe-gui.ps1
 # 证据：.tools\studio-out\exe-gui.png（标题/一键翻译控件完整）
+# 冻结 exe 无界面端到端识别（日志在 <out>.log，validate 失败退 4）：
+.\.tools\studio-exe\dist\SubtitleStudio.exe --transcribe "song.flac" --out "song.mll.json" --model small
 ```
 
 ---
 
 ## 13. 质量门与验收结论（2026-09-28）
 
-自动化：官方 `flutter test` **18/18**、`flutter analyze` 0 error/0 warning（仅 15 条既有 info）；OH fork `dart analyze` 零问题；字幕工坊 pytest **15/15**（含 translator 8 项）+ GUI 真实事件冒烟通过（含一键翻译三轮回归）；服务端 smoke 通过。
+自动化：官方 `flutter test` **18/18**、`flutter analyze` 0 error/0 warning（仅 15 条既有 info）；OH fork `dart analyze` 零问题；字幕工坊 pytest **18/18**（schema 10 项含 v1.3 拆句/时间戳修复 + translator 8 项）+ GUI 真实事件冒烟通过（含一键翻译三轮回归）；服务端 smoke 通过。
+v1.3 增补（2026-09-29，无时长上限/歌曲兜底）：**冻结 exe 直跑** 3:53 FLAC 歌曲 small 档 52 句覆盖 233.4s（修复前同文件仅 8 句止于 ~49s）、validate OK、MyMemory 52/52 翻译成功；10 分 16 秒长口播 134 句覆盖 616.9s（VAD 单遍，无额外开销）；sample.mp3 质量门回归仍 WER 0%/rubric 5/5。
 v1.2 增补真机验收（2026-09-29，同一台 HBN-AL00）：工坊 CLI 经 MyMemory 真实翻译 sample 4/4 成功 → adb 推送 → 条目「替换字幕」SAF 关联 → 播放页三态截图：**双语**（dev-s8，每句英文下中文译文+逐词高亮，无横幅）、**旧无译文字幕**（dev-s4，双语下中文引导横幅出现）、**盲听**（dev-s10 全隐 → s11 显示当前句且自动跟到末句 → s12 看译文出现「跟踪它，记录它…」）、**原文**（dev-s13，纯英文）。
 
 真机：**HBN-AL00（HarmonyOS 4.2 / AOSP 12 兼容层，序列号 2MN0224730027764，arm64）**，8 条验收标准全部 PASS：

@@ -53,7 +53,7 @@ adb install -r build\app\outputs\flutter-apk\app-release.apk
 ```powershell
 # 双击 tools\subtitle-studio\启动字幕工坊.bat，或：
 $env:PYTHONPATH = "$PWD\tools\subtitle-studio"
-.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 15 passed
+.\.tools\venvs\mll\Scripts\python.exe -m pytest tools\subtitle-studio\tests   # 18 passed
 .\.tools\venvs\mll\Scripts\python.exe -m mll_subtitles.cli --help
 
 # 识别后直接翻译（-t 目标语言）；也可只翻译已有字幕 JSON（断点续译，默认跳过已有译文）
@@ -66,6 +66,12 @@ $env:PYTHONPATH = "$PWD\tools\subtitle-studio"
 默认导出到媒体同目录的同名 `.mll.json`。手机端导入媒体时选择该文件配对即可。
 翻译默认走免 key 的 MyMemory（海外可自动降级 Google gtx，亦可自建 LibreTranslate），
 实测 sample.mp3 用 small 档：**WER 0%，词边界 p90 误差 0.092s，4 句机翻全部成功**。
+
+**音频无时长上限**：整段音频始终全部识别（已实测 10 分钟口播 134 句、3:53 歌曲 52 句）。
+默认走 VAD 人声分割；当 VAD 覆盖率不足 60%（歌曲/强背景音乐下人声会被误判为非人声，
+表现为"只有前几十秒几句"）时，日志会提示并**自动切换全音频识别兜底**，同时加音乐风格
+提示找回轻柔前奏上的演唱，再按词间停顿把长段整理成歌词行，保证内容不截断。CPU 上识别
+耗时约与音频等长，属正常现象。
 
 #### 打包成免安装 exe（分发给没有 Python 的电脑）
 
@@ -80,6 +86,8 @@ powershell -ExecutionPolicy Bypass -File scripts\check-studio-exe-gui.ps1
   **目标机无需安装任何运行时**；首启自解压约 10–25 秒属正常现象（`-Directory` 可出启动更快的目录版）。
 - Whisper 模型不打进 exe：首次识别时自动下载到 `exe 同级\hf-cache\`（便携）；
   目录只读时退到 `%LOCALAPPDATA%\MyLangLeanSubtitleStudio\hf-cache`；已设全局 `HF_HOME` 则沿用。
+- 隐藏的无界面批处理参数（自动化/自测用，日志写在 `--out` 同名 `.log`）：
+  `SubtitleStudio.exe --transcribe "x.flac" --out "x.mll.json" --model small [--lang en]`
 
 ### 方式三：桌面调试（无设备）
 

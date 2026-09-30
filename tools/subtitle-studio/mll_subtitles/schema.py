@@ -109,6 +109,7 @@ class Transcript:
         karaoke highlight cannot drift from the words."""
         segments: list[Segment] = []
         last_end = 0.0
+        prev_end = 0.0  # end of the previous segment's last word
         for idx, seg in enumerate(whisper_segments):
             raw_words = getattr(seg, "words", None) or []
             words: list[Word] = []
@@ -125,6 +126,8 @@ class Transcript:
                 ))
             if not words:
                 continue
+            _repair_word_times(words, prev_end)
+            prev_end = words[-1].e
             start = words[0].s
             end = words[-1].e
             last_end = max(last_end, end)
@@ -181,6 +184,72 @@ class Transcript:
             last = max(last, seg.end)
         _renumber(self.segments)
         self.duration = round(max(self.duration, last + 0.02), 3)
+
+
+def split_by_word_gaps(
+    transcript: "Transcript",
+    gap: float = 0.9,
+    hard_gap: float = 0.35,
+    max_duration: float = 12.0,
+) -> "Transcript":
+    """Split over-long segments at clear pauses between words.
+
+    Whisper without VAD can emit 30 s mega-segments for sung vocals (timestamp
+    tokens are barely predicted over music). Lyric phrases still show up as
+    gaps in the word timeline, so we re-cut there. Plain speech produced via
+    the VAD path is unaffected because its segments are already pause-bounded.
+    Returns a new Transcript; ids/order are regenerated.
+    """
+    out: list[Segment] = []
+    for seg in transcript.segments:
+        if len(seg.words) <= 1:
+            out.append(Segment(id=0, start=seg.start, end=seg.end,
+                               text=seg.text, words=list(seg.words)))
+            continue
+        groups: list[list[Word]] = [[seg.words[0]]]
+        for prev, word in zip(seg.words, seg.words[1:]):
+            cur = groups[-1]
+            pause = word.s - prev.e
+            span = word.e - cur[0].s
+            if pause >= gap or (span >= max_duration and pause >= hard_gap):
+                groups.append([word])
+            else:
+                cur.append(word)
+        for group in groups:
+            out.append(Segment(
+                id=0,
+                start=group[0].s,
+                end=group[-1].e,
+                text=_join_words(group, transcript.language),
+                words=group,
+            ))
+    _renumber(out)
+    return Transcript(language=transcript.language,
+                      duration=transcript.duration, segments=out,
+                      version=transcript.version)
+
+
+def _repair_word_times(words: List["Word"], prev_end: float) -> None:
+    """Fix zero/negative-duration word artifacts in place.
+
+    faster-whisper (especially the no-VAD path on singing) occasionally stamps
+    a word with start == end on its 20 ms grid. Nudge each offender by at most
+    ~20 ms into the surrounding silence, never crossing neighbours or the
+    previous segment's boundary.
+    """
+    n = len(words)
+    for i, w in enumerate(words):
+        if w.e - w.s >= 0.001:
+            continue
+        lo = max(prev_end if i == 0 else words[i - 1].e, 0.0)
+        hi = words[i + 1].s if i + 1 < n else w.s + 0.02
+        s2 = max(lo + 0.001, w.s - 0.02)
+        e2 = min(hi - 0.001, w.s + 0.02)
+        if e2 - s2 < 0.001:
+            s2 = max(lo + 0.001, 0.0)
+            e2 = s2 + 0.002
+        w.s = round(s2, 3)
+        w.e = round(max(e2, w.s + 0.001), 3)
 
 
 def _renumber(segments: List[Segment]) -> None:

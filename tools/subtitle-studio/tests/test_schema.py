@@ -13,6 +13,7 @@ from mll_subtitles.schema import (  # noqa: E402
     Segment,
     Transcript,
     Word,
+    split_by_word_gaps,
     validate,
 )
 
@@ -111,6 +112,46 @@ def test_validate_rejects_overlapping_segments_and_bad_ids():
     t2 = good_transcript()
     t2.segments[1].id = 5
     assert any("编号不连续" in e for e in validate(t2))
+
+
+def test_from_whisper_repairs_zero_duration_words():
+    # Singing/no-VAD artifact: a word stamped with start == end.
+    seg = _seg(10.0, 10.6, [
+        _word("so", 10.0, 10.2),
+        _word("far", 10.2, 10.2),   # zero duration, same grid point
+        _word("away", 10.3, 10.6),
+    ])
+    t = Transcript.from_whisper([seg], language="en", media_duration=10.8)
+    fixed = t.segments[0].words[1]
+    assert fixed.e - fixed.s >= 0.001
+    assert fixed.s >= t.segments[0].words[0].e
+    assert fixed.e <= t.segments[0].words[2].s
+    assert validate(t) == []
+
+
+def test_split_by_word_gaps_cuts_mega_segment_at_pauses():
+    # Two lyric lines inside one 30 s no-VAD segment, separated by a 1.2 s
+    # pause; within a line words are tightly packed.
+    line1 = [_word(t, s, s + 0.4) for t, s in
+             (("My", 0.0), ("love", 0.5), ("forever", 1.0))]
+    line2 = [_word(t, s, s + 0.4) for t, s in
+             (("where", 2.6), ("skies", 3.1), ("blue", 3.6))]
+    seg = _seg(0.0, 4.0, line1 + line2)
+    t = Transcript.from_whisper([seg], language="en", media_duration=4.2)
+    cut = split_by_word_gaps(t)
+    assert len(cut.segments) == 2
+    assert [w.w for w in cut.segments[0].words] == ["My", "love", "forever"]
+    assert [w.w for w in cut.segments[1].words] == ["where", "skies", "blue"]
+    assert [s.id for s in cut.segments] == [0, 1]
+    assert validate(cut) == []
+
+
+def test_split_by_word_gaps_leaves_tight_speech_untouched():
+    seg = _seg(0.0, 1.6, [
+        _word("real", 0.0, 0.4), _word("voices", 0.5, 1.0),
+        _word("now", 1.1, 1.6)])
+    t = Transcript.from_whisper([seg], language="en", media_duration=1.8)
+    assert len(split_by_word_gaps(t).segments) == 1
 
 
 def test_recompute_bounds_after_edit():
