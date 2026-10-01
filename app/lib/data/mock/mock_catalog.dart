@@ -40,6 +40,42 @@ class MockCatalog {
       language: 'de',
       description: '慢速德语新闻，适合中高级学习者挑战。',
     ),
+    Podcast(
+      id: 'p5',
+      title: 'Hablemos Español',
+      author: 'Radio Casa',
+      feedUrl: 'https://example.com/feeds/hablemos-espanol.xml',
+      language: 'es',
+      level: ContentLevel.beginner,
+      description: '生活化的西语对话，从点餐到旅行一路开口说。',
+    ),
+    Podcast(
+      id: 'p6',
+      title: '서울 스토리',
+      author: '한국어 스튜디오',
+      feedUrl: 'https://example.com/feeds/seoul-story.xml',
+      language: 'ko',
+      level: ContentLevel.intermediate,
+      description: '首尔日常场景韩语播客，练听力也练敬语语感。',
+    ),
+    Podcast(
+      id: 'p7',
+      title: '中文慢谈',
+      author: '慢声工作室',
+      feedUrl: 'https://example.com/feeds/chinese-slow-talk.xml',
+      language: 'zh',
+      level: ContentLevel.intermediate,
+      description: '用清晰普通话聊文化与生活，适合中文进阶学习者。',
+    ),
+    Podcast(
+      id: 'p8',
+      title: 'Everyday English News',
+      author: 'Global Talk',
+      feedUrl: 'https://example.com/feeds/everyday-english-news.xml',
+      language: 'en',
+      level: ContentLevel.advanced,
+      description: '常速英语新闻短评，词汇密度高，适合高级学习者。',
+    ),
   ];
 
   /// Bundled neural-TTS sample (scripts/gen_sample_audio.py), word-aligned

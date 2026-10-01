@@ -9,6 +9,16 @@ class Env {
   static const String appName = 'MyLangLean';
   static const String appNameEn = 'MyLangLean';
 
+  /// Shown in the profile page's about dialog (kept in sync with pubspec).
+  static const String appVersion = '0.4.1';
+
+  /// Build number, kept in sync with the `+N` suffix in pubspec.yaml. Used by
+  /// the OTA version comparison.
+  static const int appBuildNumber = 5;
+
+  /// Version string sent to `/releases/latest` (`x.y.z+buildNo`).
+  static const String appVersionWithBuild = '$appVersion+$appBuildNumber';
+
   /// Guest free-preview window for transcripts (seconds), same rule as OORA.
   static const int guestPreviewSec = 300;
 

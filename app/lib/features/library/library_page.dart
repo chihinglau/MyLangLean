@@ -6,12 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../data/providers.dart';
+import '../../data/repositories/synced_library_repository.dart';
 import '../../domain/entities/episode.dart';
+import '../../domain/entities/podcast.dart';
 import '../../pal/pal_providers.dart';
 import '../player/player_controller.dart';
-
-/// State refresh token (repositories are wrapped once at startup).
-final libraryRefreshProvider = StateProvider<int>((ref) => 0);
 
 class LibraryPage extends ConsumerWidget {
   const LibraryPage({super.key});
@@ -45,26 +44,7 @@ class LibraryPage extends ConsumerWidget {
                   text: '还没有本地内容\n点击下方按钮导入音视频\n并可用「字幕工坊」的 JSON 配对字幕')
             else
               _EpisodeList(episodes: localMedia),
-            if (subscriptions.isEmpty)
-              const _EmptyHint(icon: Icons.radio_rounded,
-                  text: '还没有订阅播客\n去「发现」找到喜欢的声音')
-            else
-              ListView.builder(
-                itemCount: subscriptions.length,
-                itemBuilder: (context, i) => ListTile(
-                  leading: const Icon(Icons.radio_rounded),
-                  title: Text(subscriptions[i].title),
-                  subtitle: Text(subscriptions[i].author),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline),
-                    onPressed: () async {
-                      await library
-                          .toggleSubscription(subscriptions[i]);
-                      ref.read(libraryRefreshProvider.notifier).state++;
-                    },
-                  ),
-                ),
-              ),
+            _SubscriptionTab(subscriptions: subscriptions),
           ],
         ),
       ),
@@ -136,6 +116,53 @@ class LibraryPage extends ConsumerWidget {
     if (!context.mounted) return;
     await ref.read(playerControllerProvider.notifier).playEpisode(episode);
     if (context.mounted) context.push('/player');
+  }
+}
+
+class _SubscriptionTab extends ConsumerWidget {
+  const _SubscriptionTab({required this.subscriptions});
+
+  final List<Podcast> subscriptions;
+
+  Future<void> _sync(WidgetRef ref) async {
+    final library = ref.read(libraryRepositoryProvider);
+    if (library is SyncedLibraryRepository) {
+      await library.syncSubscriptions();
+    }
+    ref.read(libraryRefreshProvider.notifier).state++;
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final library = ref.read(libraryRepositoryProvider);
+    return RefreshIndicator(
+      onRefresh: () => _sync(ref),
+      child: subscriptions.isEmpty
+          ? ListView(
+              padding: const EdgeInsets.only(top: 96),
+              children: const [
+                _EmptyHint(
+                    icon: Icons.radio_rounded,
+                    text: '还没有订阅播客\n去「发现」找到喜欢的声音'),
+              ],
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.only(bottom: 96),
+              itemCount: subscriptions.length,
+              itemBuilder: (context, i) => ListTile(
+                leading: const Icon(Icons.radio_rounded),
+                title: Text(subscriptions[i].title),
+                subtitle: Text(subscriptions[i].author),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () async {
+                    await library.toggleSubscription(subscriptions[i]);
+                    ref.read(libraryRefreshProvider.notifier).state++;
+                  },
+                ),
+              ),
+            ),
+    );
   }
 }
 

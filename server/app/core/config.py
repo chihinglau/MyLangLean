@@ -1,6 +1,12 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# server/app/core/config.py -> parents[2] == server/
+SERVER_DIR = Path(__file__).resolve().parents[2]
+# 仓库根（app/assets 在该目录下）
+REPO_ROOT = SERVER_DIR.parent
 
 
 class Settings(BaseSettings):
@@ -10,6 +16,16 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_days: int = 30
+
+    # 持久化数据目录：sqlite 库、media/、releases/ 均在其下。
+    # 默认 <repo>/server/data，可用环境变量 MLL_DATA_DIR 覆盖。
+    data_dir: str = str(SERVER_DIR / "data")
+    # 管理接口令牌（请求头 X-Admin-Token），默认仅用于本地开发。
+    admin_token: str = "dev-admin-token"
+
+    # 浏览器跨域白名单，逗号分隔；默认 * 仅供本地开发，
+    # 生产部署请设置 MLL_CORS_ORIGINS=https://your.domain
+    cors_origins: str = "*"
 
     # Free monthly transcription quota per account (seconds = 100 minutes).
     monthly_quota_sec: int = 6000
@@ -25,6 +41,18 @@ class Settings(BaseSettings):
     asr_model: str = "large-v3-turbo"
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
+
+    @property
+    def db_path(self) -> Path:
+        return Path(self.data_dir) / "mll.db"
+
+    @property
+    def media_dir(self) -> Path:
+        return Path(self.data_dir) / "media"
+
+    @property
+    def releases_dir(self) -> Path:
+        return Path(self.data_dir) / "releases"
 
 
 @lru_cache

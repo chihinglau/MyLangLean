@@ -1,7 +1,7 @@
 name: mylanglean
 description: "MyLangLean - AI podcast shadowing coach (OORA-style) for HarmonyOS / iOS."
 publish_to: "none"
-version: 0.1.0+1
+version: 0.4.1+5
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

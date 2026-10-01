@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyLangLean 运营管理台</title>
+<style>
+  :root { --bd:#e3e3e8; --mut:#6b7280; --pri:#2563eb; --bg:#f6f7f9; }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei",
+      "PingFang SC", sans-serif;
+    background:var(--bg); color:#1f2430; font-size:14px;
+  }
+  header {
+    background:#111827; color:#fff; padding:10px 16px;
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header input { padding:6px 8px; border-radius:6px; border:1px solid #4b5563;
+    background:#1f2937; color:#fff; width:260px; }
+  header button { padding:6px 12px; }
+  main { max-width:1080px; margin:16px auto; padding:0 12px; }
+  nav { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  nav button {
+    padding:7px 14px; border:1px solid var(--bd); background:#fff;
+    border-radius:8px; cursor:pointer;
+  }
+  nav button.active { background:var(--pri); color:#fff; border-color:var(--pri); }
+  section.card {
+    background:#fff; border:1px solid var(--bd); border-radius:10px;
+    padding:16px; display:none;
+  }
+  section.card.active { display:block; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  h3 { font-size:13px; margin:18px 0 8px; color:#374151; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th, td { border-bottom:1px solid var(--bd); padding:7px 8px;
+    text-align:left; vertical-align:top; }
+  th { color:var(--mut); font-weight:600; font-size:12px; }
+  input, select, textarea {
+    font:inherit; padding:6px 8px; border:1px solid var(--bd);
+    border-radius:6px; width:100%;
+  }
+  textarea { min-height:46px; }
+  label { display:block; font-size:12px; color:var(--mut); margin:8px 0 3px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button.act {
+    padding:6px 12px; border:1px solid var(--bd); background:#fff;
+    border-radius:6px; cursor:pointer;
+  }
+  button.primary { background:var(--pri); color:#fff; border-color:var(--pri); }
+  button.danger { color:#b91c1c; border-color:#fecaca; }
+  button.small { padding:3px 8px; font-size:12px; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:999px;
+    font-size:12px; background:#eef2ff; color:#3730a3; }
+  .tag.off { background:#fef2f2; color:#b91c1c; }
+  #toast { position:fixed; right:16px; bottom:16px; background:#111827;
+    color:#fff; padding:10px 14px; border-radius:8px; display:none;
+    max-width:360px; white-space:pre-wrap; }
+  .hint { color:var(--mut); font-size:12px; margin:4px 0 10px; }
+  .inline { width:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MyLangLean 管理台</h1>
+  <input id="admin-token" type="password" placeholder="X-Admin-Token（开发默认 dev-admin-token）"
+         autocomplete="off">
+  <button class="act" id="btn-login" type="button">保存 Token</button>
+  <span id="token-state" class="hint" style="color:#9ca3af;margin:0"></span>
+</header>
+
+<main>
+  <nav>
+    <button data-tab="users" class="active">用户管理</button>
+    <button data-tab="content">内容发布</button>
+    <button data-tab="subscriptions">订阅查看</button>
+    <button data-tab="releases">版本发布</button>
+  </nav>
+
+  <!-- 用户管理 -->
+  <section class="card active" data-section="users">
+    <h2>用户管理</h2>
+    <p class="hint">禁用后该用户登录返回 403；重置密码后需用新密码登录。</p>
+    <div class="row"><button class="act" id="btn-load-users" type="button">刷新用户列表</button></div>
+    <table><thead><tr>
+      <th>ID</th><th>邮箱</th><th>昵称</th><th>类型</th><th>状态</th>
+      <th>订阅数</th><th>注册时间</th><th>操作</th>
+    </tr></thead><tbody id="users-body"></tbody></table>
+  </section>
+
+  <!-- 内容发布 -->
+  <section class="card" data-section="content">
+    <h2>内容发布（播客 + 单集 + 上下架）</h2>
+    <div class="row">
+      <button class="act" id="btn-load-pods" type="button">刷新播客</button>
+      <button class="act danger" id="btn-reseed" type="button">重置为内置目录(reseed)</button>
+    </div>
+    <h3>新建播客</h3>
+    <div class="grid">
+      <div><label>标题 *</label><input id="p-title" placeholder="标题"></div>
+      <div><label>作者</label><input id="p-author"></div>
+      <div><label>语言（en/ja/fr/de/es/ko/zh）</label><input id="p-language" value="en"></div>
+      <div><label>难度</label><select id="p-level">
+        <option value="beginner">beginner 初级</option>
+        <option value="intermediate">intermediate 中级</option>
+        <option value="advanced">advanced 高级</option>
+      </select></div>
+      <div><label>Feed URL</label><input id="p-feed"></div>
+      <div><label>封面 URL</label><input id="p-artwork"></div>
+    </div>
+    <label>描述</label><textarea id="p-desc"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="act primary" id="btn-create-pod" type="button">创建并上架</button>
+    </div>
+    <h3>已发布 / 已下架播客</h3>
+    <table><thead><tr>
+      <th>ID</th><th>标题</th><th>语言/难度</th><th>状态</th>
+      <th>单集</th><th>操作</th>
+    </tr></thead><tbody id="pods-body"></tbody></table>
+  </section>
+
+  <!-- 订阅查看 -->
+  <section class="card" data-section="subscriptions">
+    <h2>订阅查看</h2>
+    <div class="row">
+      <input class="inline" id="sub-user" style="width:320px"
+             placeholder="用户 ID（可在用户管理中复制）">
+      <button class="act" id="btn-load-subs" type="button">查看该用户订阅</button>
+    </div>
+    <table><thead><tr><th>播客 ID</th><th>标题</th><th>作者</th>
+      <th>语言</th><th>难度</th></tr></thead>
+      <tbody id="subs-body"></tbody></table>
+  </section>
+
+  <!-- 版本发布 -->
+  <section class="card" data-section="releases">
+    <h2>版本发布（APK 上传 / 列表 / 删除）</h2>
+    <div class="grid">
+      <div><label>平台</label><select id="r-platform">
+        <option value="android">android</option>
+        <option value="ohos">ohos</option>
+      </select></div>
+      <div><label>语义版本</label><input id="r-version" placeholder="0.4.1"></div>
+      <div><label>构建号 buildNo</label><input id="r-build" type="number" value="1"></div>
+      <div><label>渠道</label><select id="r-channel">
+        <option value="stable">stable</option>
+        <option value="beta">beta</option>
+      </select></div>
+      <div><label>APK 文件（仅 .apk）</label>
+        <input id="r-file" type="file" accept=".apk"></div>
+      <div><label>强制更新</label>
+        <select id="r-mandatory"><option value="false">否</option>
+          <option value="true">是</option></select></div>
+    </div>
+    <label>更新说明 notes</label><textarea id="r-notes"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="act primary" id="btn-upload-release" type="button">上传发布</button>
+      <button class="act" id="btn-load-releases" type="button">刷新发布历史</button>
+    </div>
+    <table><thead><tr>
+      <th>ID</th><th>平台</th><th>版本</th><th>build</th><th>渠道</th>
+      <th>强制</th><th>大小</th><th>sha256</th><th>发布时间</th><th>操作</th>
+    </tr></thead><tbody id="releases-body"></tbody></table>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var API = "/api/v1";
+  var $ = function (id) { return document.getElementById(id); };
+  var tokenEl = $("admin-token");
+  var stateEl = $("token-state");
+
+  function toast(msg) {
+    var el = $("toast");
+    el.textContent = msg;
+    el.style.display = "block";
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.style.display = "none"; }, 3200);
+  }
+
+  function saveToken() {
+    localStorage.setItem("mll_admin_token", tokenEl.value.trim());
+    refreshTokenState();
+  }
+  function refreshTokenState() {
+    var t = localStorage.getItem("mll_admin_token") || "";
+    if (!tokenEl.value) tokenEl.value = t;
+    stateEl.textContent = t ? "Token 已保存" : "未设置 Token";
+  }
+  $("btn-login").addEventListener("click", saveToken);
+
+  function api(method, path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["X-Admin-Token"] = localStorage.getItem("mll_admin_token") || "";
+    return fetch(API + path, {
+      method: method,
+      headers: headers,
+      body: opts.body
+    }).then(function (resp) {
+      if (resp.status === 204) return null;
+      var ct = resp.headers.get("content-type") || "";
+      var payload = ct.indexOf("application/json") >= 0
+        ? resp.json() : resp.text();
+      return payload.then(function (data) {
+        if (!resp.ok) {
+          var msg = typeof data === "string" ? data
+            : (data.detail || JSON.stringify(data));
+          if (resp.status === 401) {
+            stateEl.textContent = "Token 无效或已过期（401）";
+            toast("管理 Token 无效（401），请重新输入后保存");
+          }
+          var err = new Error(method + " " + path + " -> " + resp.status
+            + " " + msg);
+          err.status = resp.status;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function esc(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+               "'": "&#39;" }[c];
+    });
+  }
+
+  // ---- Tab 切换 ----
+  document.querySelectorAll("nav button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll("nav button").forEach(function (b) {
+        b.classList.remove("active");
+      });
+      btn.classList.add("active");
+      document.querySelectorAll("section.card").forEach(function (s) {
+        s.classList.toggle("active",
+          s.getAttribute("data-section") === btn.dataset.tab);
+      });
+    });
+  });
+
+  // ---- 用户管理 ----
+  function loadUsers() {
+    $("users-body").innerHTML =
+      '<tr><td colspan="8" style="text-align:center;color:#9ca3af">加载中…</td></tr>';
+    api("GET", "/admin/users").then(function (data) {
+      $("users-body").innerHTML = data.items.map(function (u) {
+        var statusTag = u.disabled
+          ? '<span class="tag off">已禁用</span>'
+          : '<span class="tag">正常</span>';
+        return "<tr><td title='" + esc(u.id) + "'>"
+          + esc(u.id.slice(0, 8)) + "</td><td>" + esc(u.email || "-")
+          + "</td><td>" + esc(u.name || "") + "</td><td>"
+          + (u.is_guest ? "游客" : "注册") + "</td><td>" + statusTag
+          + "</td><td>" + u.subscription_count + "</td><td>"
+          + esc(u.created_at) + '</td><td><div class="row">'
+          + '<button class="act small" data-act="toggle" data-id="'
+          + esc(u.id) + '">' + (u.disabled ? "启用" : "禁用") + "</button>"
+          + '<button class="act small" data-act="rename" data-id="'
+          + esc(u.id) + '">改名</button>'
+          + '<button class="act small" data-act="reset" data-id="'
+          + esc(u.id) + '">重置密码</button>'
+          + '<button class="act small" data-act="subs" data-id="'
+          + esc(u.id) + '">看订阅</button>'
+          + "</div></td></tr>";
+      }).join("");
+    }).catch(function (e) {
+      $("users-body").innerHTML =
+        '<tr><td colspan="8" style="text-align:center;color:#f87171">加载失败：'
+        + esc(e.message) + "</td></tr>";
+    });
+  }
+  $("btn-load-users").addEventListener("click", loadUsers);
+  $("users-body").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button");
+    if (!b) return;
+    var id = b.dataset.id, act = b.dataset.act;
+    if (act === "toggle") {
+      var will = b.textContent.trim() === "禁用";
+      api("PATCH", "/admin/users/" + encodeURIComponent(id), {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled: will })
+      }).then(loadUsers).catch(function (e) { toast(e.message); });
+    } else if (act === "rename") {
+      var name = prompt("新昵称：");
+      if (name == null) return;
+      api("PATCH", "/admin/users/" + encodeURIComponent(id), {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name })
+      }).then(loadUsers).catch(function (e) { toast(e.message); });
+    } else if (act === "reset") {
+      var pw = prompt("为该用户设置新密码（至少 6 位）：");
+      if (!pw) return;
+      api("PATCH", "/admin/users/" + encodeURIComponent(id), {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reset_password: pw })
+      }).then(function () { toast("密码已重置"); })
+        .catch(function (e) { toast(e.message); });
+    } else if (act === "subs") {
+      $("sub-user").value = id;
+      document.querySelector('nav button[data-tab="subscriptions"]').click();
+      loadSubs();
+    }
+  });
+
+  // ---- 内容发布 ----
+  function loadPods() {
+    // 管理视角：/admin/podcasts 同时返回已上架与已下架内容。
+    $("pods-body").innerHTML =
+      '<tr><td colspan="6" style="text-align:center;color:#9ca3af">加载中…</td></tr>';
+    api("GET", "/admin/podcasts").then(function (res) {
+      $("pods-body").innerHTML = res.items.map(function (p) {
+        return podRow(p);
+      }).join("") || '<tr><td colspan="6" style="text-align:center;color:#9ca3af">暂无播客</td></tr>';
+    }).catch(function (e) {
+      toast(e.message);
+      $("pods-body").innerHTML =
+        '<tr><td colspan="6" style="text-align:center;color:#f87171">加载失败：'
+        + esc(e.message) + "</td></tr>";
+    });
+  }
+  function podRow(p) {
+    var onAir = p.published === true || p.published === 1;
+    return "<tr><td title='" + esc(p.id) + "'>" + esc(p.id.slice(0, 8))
+      + "</td><td>" + esc(p.title) + "</td><td>" + esc(p.language)
+      + " / " + esc(p.level) + "</td><td>"
+      + (onAir ? '<span class="tag">已上架</span>'
+               : '<span class="tag off">已下架</span>')
+      + '</td><td><button class="act small" data-act="eps" data-id="'
+      + esc(p.id) + '">单集</button></td>'
+      + '<td><div class="row">'
+      + (onAir
+          ? '<button class="act small" data-act="unpub" data-id="'
+            + esc(p.id) + '">下架</button>'
+          : '<button class="act small" data-act="pub" data-id="'
+            + esc(p.id) + '">上架</button>')
+      + '<button class="act small danger" data-act="del" data-id="'
+      + esc(p.id) + '">删除</button>'
+      + "</div></td></tr>";
+  }
+  $("btn-load-pods").addEventListener("click", loadPods);
+  $("btn-create-pod").addEventListener("click", function () {
+    var body = {
+      title: $("p-title").value.trim(),
+      author: $("p-author").value.trim(),
+      language: $("p-language").value.trim(),
+      level: $("p-level").value,
+      feedUrl: $("p-feed").value.trim(),
+      artworkUrl: $("p-artwork").value.trim(),
+      description: $("p-desc").value.trim(),
+      published: true
+    };
+    if (!body.title) { toast("标题必填"); return; }
+    api("POST", "/admin/podcasts", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function () {
+      toast("播客已创建");
+      $("p-title").value = "";
+      loadPods();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $("btn-reseed").addEventListener("click", function () {
+    if (!confirm("将删除全部播客/单集/订阅并恢复内置 8×2，确定？")) return;
+    api("POST", "/admin/catalog/reseed").then(function () {
+      toast("已重置为内置目录"); loadPods();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $("pods-body").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button");
+    if (!b) return;
+    var id = b.dataset.id, act = b.dataset.act;
+    if (act === "unpub" || act === "pub") {
+      api("PATCH", "/admin/podcasts/" + encodeURIComponent(id), {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ published: act === "pub" })
+      }).then(loadPods).catch(function (e) { toast(e.message); });
+    } else if (act === "del") {
+      if (!confirm("删除播客会级联删除其单集与订阅，确定？")) return;
+      api("DELETE", "/admin/podcasts/" + encodeURIComponent(id))
+        .then(loadPods).catch(function (e) { toast(e.message); });
+    } else if (act === "eps") {
+      // prompt 式新增/删除单集，满足运营最小闭环。
+      var action = prompt("输入 a 添加单集；输入 d 删除单集（先列出 ID）", "a");
+      if (action === "a") {
+        var title = prompt("单集标题：");
+        if (!title) return;
+        api("POST", "/admin/podcasts/" + encodeURIComponent(id) + "/episodes", {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: title,
+            audioUrl: "/media/sample.mp3",
+            durationMs: 17640,
+            pubDate: "2026-09-20",
+            language: "en"
+          })
+        }).then(function () { toast("单集已添加"); })
+          .catch(function (e) { toast(e.message); });
+      } else if (action === "d") {
+        fetch(API + "/catalog/podcasts/" + encodeURIComponent(id)
+              + "/episodes").then(function (r) { return r.json(); })
+          .then(function (eps) {
+            var eid = prompt("要删除的单集 ID：\n" + eps.map(function (e) {
+              return e.id + "  " + e.title;
+            }).join("\n"));
+            if (!eid) return;
+            return api("DELETE", "/admin/episodes/"
+                       + encodeURIComponent(eid.trim()));
+          }).then(function () { toast("单集已删除"); })
+          .catch(function (e) { toast(e.message); });
+      }
+    }
+  });
+
+  // ---- 订阅查看 ----
+  function loadSubs() {
+    var id = $("sub-user").value.trim();
+    if (!id) { toast("请输入用户 ID"); return; }
+    $("subs-body").innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:#9ca3af">加载中…</td></tr>';
+    api("GET", "/admin/users/" + encodeURIComponent(id) + "/subscriptions")
+      .then(function (data) {
+        $("subs-body").innerHTML = data.items.map(function (p) {
+          return "<tr><td>" + esc(p.id) + "</td><td>" + esc(p.title)
+            + "</td><td>" + esc(p.author) + "</td><td>" + esc(p.language)
+            + "</td><td>" + esc(p.level) + "</td></tr>";
+        }).join("");
+      }).catch(function (e) { toast(e.message); });
+  }
+  $("btn-load-subs").addEventListener("click", loadSubs);
+
+  // ---- 版本发布 ----
+  function loadReleases() {
+    $("releases-body").innerHTML =
+      '<tr><td colspan="10" style="text-align:center;color:#9ca3af">加载中…</td></tr>';
+    api("GET", "/admin/releases").then(function (data) {
+      $("releases-body").innerHTML = data.items.map(function (r) {
+        return "<tr><td>" + r.id + "</td><td>" + esc(r.platform) + "</td><td>"
+          + esc(r.version) + "</td><td>" + r.build_no + "</td><td>"
+          + esc(r.channel) + "</td><td>" + (r.mandatory ? "是" : "否")
+          + "</td><td>" + r.size + "</td><td title='" + esc(r.sha256)
+          + "'>" + esc(r.sha256.slice(0, 10)) + "…</td><td>"
+          + esc(r.published_at) + '</td><td><button class="act small danger"'
+          + ' data-act="delrel" data-id="' + r.id + '">删除</button>'
+          + "</td></tr>";
+      }).join("");
+    }).catch(function (e) { toast(e.message); });
+  }
+  $("btn-load-releases").addEventListener("click", loadReleases);
+  $("btn-upload-release").addEventListener("click", function () {
+    var f = $("r-file").files[0];
+    if (!f) { toast("请选择 .apk 文件"); return; }
+    var fd = new FormData();
+    fd.append("file", f);
+    fd.append("platform", $("r-platform").value);
+    fd.append("version", $("r-version").value.trim());
+    fd.append("buildNo", $("r-build").value);
+    fd.append("channel", $("r-channel").value);
+    fd.append("notes", $("r-notes").value);
+    fd.append("mandatory", $("r-mandatory").value);
+    api("POST", "/admin/releases", { body: fd }).then(function () {
+      toast("发布成功"); loadReleases();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $("releases-body").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button");
+    if (!b || b.dataset.act !== "delrel") return;
+    if (!confirm("删除该发布包（含磁盘文件）？")) return;
+    api("DELETE", "/admin/releases/" + b.dataset.id)
+      .then(loadReleases).catch(function (e) { toast(e.message); });
+  });
+
+  refreshTokenState();
+})();
+</script>
+</body>
+</html>

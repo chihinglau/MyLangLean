@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/providers.dart';
@@ -95,11 +95,13 @@ class _ShadowingPageState extends ConsumerState<ShadowingPage> {
         sentence: segment.text,
         startMs: segment.startOffset.inMilliseconds,
         endMs: segment.endOffset.inMilliseconds,
+        durationMs: attempt.inMilliseconds,
         filePath: path,
         score: score,
         createdAt: DateTime.now(),
       );
       await ref.read(practiceRepositoryProvider).save(recording);
+      ref.read(practiceRefreshProvider.notifier).state++;
       if (!mounted) return;
       setState(() {
         _lastScore = score;

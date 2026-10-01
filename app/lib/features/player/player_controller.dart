@@ -6,7 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/providers.dart';
 import '../../data/repositories/mock_repositories.dart';
 import '../../domain/entities/episode.dart';
+import '../../domain/entities/recording.dart';
 import '../../domain/entities/transcript.dart';
+import '../../domain/entities/user_preferences.dart';
 import '../../pal/audio_player_service.dart';
 import '../../pal/pal_providers.dart';
 
@@ -117,7 +119,51 @@ class PlayerController extends Notifier<PlayerState> {
       _errorSub?.cancel();
       position.dispose();
     });
-    return const PlayerState();
+
+    // Profile-page preferences become playback defaults; later edits apply
+    // live without rebuilding the audio subscriptions.
+    final prefs = ref.read(preferencesProvider);
+    ref.listen(preferencesProvider, (prev, next) {
+      if (prev?.defaultRate != next.defaultRate && state.hasMedia) {
+        _audio.setRate(next.defaultRate);
+      }
+      state = state.copyWith(
+        rate: next.defaultRate,
+        fontScale: next.defaultFontScale,
+        mode: _mapSubtitleMode(next.subtitle),
+      );
+    });
+    return PlayerState(
+      rate: prefs.defaultRate,
+      fontScale: prefs.defaultFontScale,
+      mode: _mapSubtitleMode(prefs.subtitle),
+    );
+  }
+
+  static SubtitleMode _mapSubtitleMode(SubtitlePref pref) =>
+      switch (pref) {
+        SubtitlePref.sourceOnly => SubtitleMode.sourceOnly,
+        SubtitlePref.bilingual => SubtitleMode.bilingual,
+        SubtitlePref.hidden => SubtitleMode.hidden,
+      };
+
+  /// Whether the player is currently showing a history recording rather
+  /// than a regular episode.
+  bool isPlayingRecording(String recordingId) =>
+      state.episode?.id == 'recording-$recordingId';
+
+  /// Plays back a shadowing attempt from the history page through the same
+  /// audio pipeline (and mini player) as normal episodes.
+  Future<void> playRecording(Recording recording) async {
+    final episode = Episode(
+      id: 'recording-${recording.id}',
+      title: recording.sentence.isEmpty ? '跟读录音' : recording.sentence,
+      audioUrl: recording.filePath,
+      isLocal: true,
+      localPath: recording.filePath,
+      duration: Duration(milliseconds: recording.practiceMs),
+    );
+    await playEpisode(episode);
   }
 
   /// Loads [episode] and its transcript (optional), then starts playback.

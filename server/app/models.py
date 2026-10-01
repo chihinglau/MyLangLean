@@ -1,19 +1,46 @@
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
+
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 
 
 class DeviceLoginIn(BaseModel):
     device_id: str = Field(min_length=1, max_length=128)
 
+    @field_validator("device_id")
+    @classmethod
+    def _safe_device_id(cls, value: str) -> str:
+        # 白名单字符，杜绝设备 ID 中的注入/XSS 载荷。
+        if not _DEVICE_ID_RE.match(value):
+            raise ValueError("device_id 仅允许字母、数字与 . _ : -")
+        return value
+
 
 class EmailLoginIn(BaseModel):
     email: str
-    password: str = Field(min_length=4)
+    password: str = Field(min_length=1)
+
+
+class RegisterIn(BaseModel):
+    email: str
+    password: str = Field(min_length=6, max_length=128)
+    name: str | None = Field(default=None, max_length=64)
+
+
+class AccountOut(BaseModel):
+    id: str
+    email: str | None
+    name: str
+    is_guest: bool
+    created_at: str
 
 
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     is_guest: bool
+    account: AccountOut | None = None
 
 
 class QuotaOut(BaseModel):

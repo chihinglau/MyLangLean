@@ -291,6 +291,7 @@ class _Controls extends StatelessWidget {
                 onPressed: () async {
                   final picked = await showModalBottomSheet<double>(
                     context: context,
+                    useRootNavigator: true,
                     builder: (_) => _RateSheet(current: state.rate),
                   );
                   if (picked != null) controller.setRate(picked);
@@ -318,6 +319,7 @@ class _Controls extends StatelessWidget {
                 onPressed: () async {
                   final picked = await showModalBottomSheet<double>(
                     context: context,
+                    useRootNavigator: true,
                     builder: (_) => _FontSheet(current: state.fontScale),
                   );
                   if (picked != null) controller.setFontScale(picked);

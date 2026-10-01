@@ -11,7 +11,8 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, status
 
-from ..core.deps import CurrentUser, Principal, store
+from ..core import db
+from ..core.deps import CurrentUser, Principal
 from ..models import (
     SegmentOut,
     TranscriptionIn,
@@ -77,9 +78,8 @@ async def _run(job: Job, user_id: str, source: str, language: str,
         result = await loop.run_in_executor(
             None, asr_service.transcribe, source, language)
         duration_sec = max(1, round(result.duration))
-        user = store.get(user_id)
-        if user is not None:
-            charge(user, duration_sec)
+        if db.get_user(user_id) is not None:
+            charge(user_id, duration_sec)
         job.transcript = _to_transcript(result, target_lang)
         job.billed_sec = duration_sec
         job.status = "done"
@@ -143,7 +143,7 @@ async def create_from_upload(
 def get_job(job_id: str, principal: Principal = CurrentUser) -> TranscriptionJobOut:
     job = _jobs.get(job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     return TranscriptionJobOut(
         id=job.id,
         status=job.status,

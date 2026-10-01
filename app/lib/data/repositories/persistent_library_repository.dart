@@ -3,15 +3,46 @@ import 'dart:io';
 import '../../domain/entities/episode.dart';
 import '../../domain/entities/podcast.dart';
 import '../../domain/repositories/repositories.dart';
+import '../kv_store.dart';
 import '../local_library_store.dart';
 
-/// Production library repository: subscriptions stay in-memory (server sync
-/// comes later), imported media is persisted through [LocalLibraryStore].
+/// Production library repository: imported media is persisted through
+/// [LocalLibraryStore] and podcast subscriptions through [KvStore]
+/// (`subscriptions` key), so both survive app restarts.
 class PersistentLibraryRepository implements LibraryRepository {
-  PersistentLibraryRepository(this._store);
+  PersistentLibraryRepository(this._store, [KvStore? kv]) : _kv = kv {
+    _subscriptions.addAll(_loadSubscriptions());
+  }
 
   final LocalLibraryStore _store;
+  final KvStore? _kv;
   final List<Podcast> _subscriptions = [];
+
+  static const _kSubscriptions = 'subscriptions';
+
+  List<Podcast> _loadSubscriptions() {
+    final raw = _kv?.get(_kSubscriptions);
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Podcast.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  Future<void> _persistSubscriptions() async {
+    await _kv?.set(
+      _kSubscriptions,
+      _subscriptions.map((p) => p.toJson()).toList(),
+    );
+  }
+
+  /// Replaces the whole subscription set (used by server sync reconciliation).
+  Future<void> replaceSubscriptions(Iterable<Podcast> items) async {
+    _subscriptions
+      ..clear()
+      ..addAll(items);
+    await _persistSubscriptions();
+  }
 
   @override
   List<Podcast> subscriptions() => List.unmodifiable(_subscriptions);
@@ -24,6 +55,7 @@ class PersistentLibraryRepository implements LibraryRepository {
     } else {
       _subscriptions.add(podcast);
     }
+    await _persistSubscriptions();
   }
 
   @override

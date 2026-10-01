@@ -43,6 +43,15 @@ abstract interface class AuthRepository {
   UserQuota quota();
   Future<Account> loginAsGuest();
   Future<Account> login({required String email, required String password});
+
+  /// Registers a new account. Falls back to local-only behaviour on offline
+  /// implementations.
+  Future<Account> register({
+    required String email,
+    required String password,
+    String? name,
+  });
+
   Future<void> logout();
 }
 
@@ -51,5 +60,10 @@ abstract interface class PracticeRepository {
   List<Recording> recordings();
   Future<Recording> save(Recording recording);
   Future<void> delete(String id);
+
+  /// Remove every record (audio files are deleted best-effort by the
+  /// implementation when it owns them).
+  Future<void> clear();
+
   int totalPracticeSec();
 }

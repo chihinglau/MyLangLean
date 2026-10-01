@@ -277,9 +277,9 @@ class _NoTranslationBanner extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.primary.withValues(alpha: 0.12),
+        color: theme.colorScheme.primary.withOpacity(0.12),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.35)),
+        border: Border.all(color: theme.colorScheme.primary.withOpacity(0.35)),
       ),
       child: Row(
         children: [
@@ -397,10 +397,10 @@ class _BlindListenViewState extends State<_BlindListenView> {
                 padding: const EdgeInsets.symmetric(
                     horizontal: 16, vertical: 14),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.10),
+                  color: theme.colorScheme.primary.withOpacity(0.10),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.35)),
+                      color: theme.colorScheme.primary.withOpacity(0.35)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -411,7 +411,7 @@ class _BlindListenViewState extends State<_BlindListenView> {
                         fontSize: 20 * widget.fontScale,
                         height: 1.5,
                         fontWeight: FontWeight.w600,
-                        color: Colors.white.withValues(alpha: 0.92),
+                        color: Colors.white.withOpacity(0.92),
                       ),
                     ),
                     if (_showGloss && seg.hasTranslation) ...[

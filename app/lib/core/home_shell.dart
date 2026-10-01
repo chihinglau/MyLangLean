@@ -1,8 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../data/providers.dart';
+import '../data/repositories/synced_auth_repository.dart';
+import '../domain/entities/quota.dart';
 import '../features/player/player_controller.dart';
+import '../features/update/update_flow.dart';
 
 class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key, required this.child, required this.index});
@@ -16,6 +22,85 @@ class HomeShell extends ConsumerStatefulWidget {
 
 class _HomeShellState extends ConsumerState<HomeShell> {
   static const _tabs = ['/discover', '/library', '/history', '/profile'];
+
+  static const _lastCheckKey = 'update.last_check_at';
+  static const _checkInterval = Duration(hours: 24);
+
+  StreamSubscription<String>? _noticeSub;
+  StreamSubscription<Account>? _accountSub;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _bindAuthEvents();
+      _autoCheckUpdate();
+    });
+  }
+
+  @override
+  void dispose() {
+    _noticeSub?.cancel();
+    _accountSub?.cancel();
+    super.dispose();
+  }
+
+  /// Wires account/account-notice streams and also resolves the startup
+  /// session future (the session check starts before the first frame, so a
+  /// broadcast event alone could be missed).
+  void _bindAuthEvents() {
+    final auth = ref.read(authRepositoryProvider);
+    if (auth is! SyncedAuthRepository) return;
+
+    _noticeSub = auth.notices.listen(_showAccountNotice);
+    _accountSub = auth.accountChanges.listen((_) {
+      if (mounted) ref.read(accountRefreshProvider.notifier).state++;
+    });
+
+    // Fires even when the session resolved before this listener existed.
+    auth.sessionReady?.then((_) {
+      if (!mounted) return;
+      ref.read(accountRefreshProvider.notifier).state++;
+      _showPendingAccountNotice();
+    });
+  }
+
+  void _showAccountNotice(String notice) {
+    if (!mounted || notice.isEmpty) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(notice), duration: const Duration(seconds: 5)),
+    );
+  }
+
+  /// Shows a one-shot notice persisted by the auth layer (e.g. account
+  /// disabled) that was produced before the stream listener existed.
+  Future<void> _showPendingAccountNotice() async {
+    final auth = ref.read(authRepositoryProvider);
+    if (auth is! SyncedAuthRepository) return;
+    final notice = await auth.consumeNotice();
+    if (notice != null && notice.isNotEmpty) _showAccountNotice(notice);
+  }
+
+  /// Silent startup OTA check, throttled to once per 24h (mandatory releases
+  /// bypass the throttle) and only attempted when the app has a persistence
+  /// layer (real device build). Failures stay silent.
+  Future<void> _autoCheckUpdate() async {
+    final kv = ref.read(kvStoreProvider);
+    if (kv == null) return;
+    final info = await fetchUpdateQuietly(ref.read(mlApiProvider));
+    if (!mounted || info == null) return;
+
+    final lastMs = (kv.get(_lastCheckKey) as num?)?.toInt() ?? 0;
+    final last = DateTime.fromMillisecondsSinceEpoch(lastMs);
+    if (!info.mandatory &&
+        DateTime.now().difference(last) < _checkInterval) {
+      return;
+    }
+    await kv.set(
+        _lastCheckKey, DateTime.now().millisecondsSinceEpoch);
+    if (!mounted) return;
+    await showUpdateFlow(context, info);
+  }
 
   void _onTap(int i) => context.go(_tabs[i]);
 

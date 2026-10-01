@@ -46,16 +46,27 @@ class Recording {
     required this.filePath,
     required this.score,
     required this.createdAt,
+    this.durationMs = 0,
   });
 
   final String id;
   final String episodeTitle;
   final String sentence;
+
+  /// Position of the sentence inside the source media.
   final int startMs;
   final int endMs;
+
+  /// Actual recorded attempt length in milliseconds (0 for legacy rows,
+  /// which then fall back to the reference sentence length).
+  final int durationMs;
   final String filePath;
   final PronunciationScore score;
   final DateTime createdAt;
+
+  /// Practice time counted for statistics: the real attempt length when
+  /// known, otherwise the reference sentence span.
+  int get practiceMs => durationMs > 0 ? durationMs : (endMs - startMs);
 
   factory Recording.fromJson(Map<String, dynamic> json) => Recording(
         id: json['id'] as String,
@@ -63,6 +74,7 @@ class Recording {
         sentence: json['sentence'] as String? ?? '',
         startMs: (json['startMs'] as num?)?.toInt() ?? 0,
         endMs: (json['endMs'] as num?)?.toInt() ?? 0,
+        durationMs: (json['durationMs'] as num?)?.toInt() ?? 0,
         filePath: json['filePath'] as String? ?? '',
         score: PronunciationScore.fromJson(
             json['score'] as Map<String, dynamic>? ?? const {}),
@@ -76,6 +88,7 @@ class Recording {
         'sentence': sentence,
         'startMs': startMs,
         'endMs': endMs,
+        'durationMs': durationMs,
         'filePath': filePath,
         'score': score.toJson(),
         'createdAt': createdAt.toIso8601String(),

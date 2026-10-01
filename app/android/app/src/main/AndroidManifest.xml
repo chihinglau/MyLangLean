@@ -3,6 +3,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- OTA: launch the system package installer for the downloaded APK. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
         android:label="MyLangLean"
         android:name="${applicationName}"
@@ -35,6 +37,12 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Serves downloaded OTA APKs to the system installer. -->
+        <provider
+            android:name=".MlUpdateFileProvider"
+            android:authorities="${applicationId}.updatefile"
+            android:exported="false"
+            android:grantUriPermissions="true"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

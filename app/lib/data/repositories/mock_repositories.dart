@@ -149,7 +149,7 @@ class TranscriptException implements Exception {
 
 class MockAuthRepository implements AuthRepository {
   Account _account = const Account(isGuest: true, deviceId: 'demo-device');
-  UserQuota _quota = const UserQuota(usedSec: 1840, isGuest: true);
+  UserQuota _quota = const UserQuota(usedSec: 0, isGuest: true);
 
   @override
   Account current() => _account;
@@ -168,6 +168,21 @@ class MockAuthRepository implements AuthRepository {
       {required String email, required String password}) async {
     await Future<void>.delayed(const Duration(milliseconds: 400));
     _account = Account(isGuest: false, name: email.split('@').first, email: email);
+    _quota = _quota.copyWith(isGuest: false);
+    return _account;
+  }
+
+  @override
+  Future<Account> register({
+    required String email,
+    required String password,
+    String? name,
+  }) async {
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    _account = Account(
+        isGuest: false,
+        name: (name == null || name.isEmpty) ? email.split('@').first : name,
+        email: email);
     _quota = _quota.copyWith(isGuest: false);
     return _account;
   }
@@ -198,6 +213,9 @@ class MemoryPracticeRepository implements PracticeRepository {
       _items.removeWhere((r) => r.id == id);
 
   @override
+  Future<void> clear() async => _items.clear();
+
+  @override
   int totalPracticeSec() =>
-      _items.fold(0, (sum, r) => sum + r.endMs - r.startMs) ~/ 1000;
+      _items.fold(0, (sum, r) => sum + r.practiceMs) ~/ 1000;
 }

@@ -9,6 +9,7 @@ class MainActivity : FlutterActivity() {
     private var playerPlugin: MlAudioPlayerPlugin? = null
     private var recorderPlugin: MlAudioRecorderPlugin? = null
     private var pickerPlugin: MlMediaPickerPlugin? = null
+    private var updaterPlugin: MlUpdaterPlugin? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -17,6 +18,7 @@ class MainActivity : FlutterActivity() {
         playerPlugin = MlAudioPlayerPlugin(applicationContext, messenger)
         recorderPlugin = MlAudioRecorderPlugin(this, messenger)
         pickerPlugin = MlMediaPickerPlugin(this, messenger)
+        updaterPlugin = MlUpdaterPlugin(this, messenger)
     }
 
     @Deprecated("Deprecated in Java")

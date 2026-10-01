@@ -1,6 +1,6 @@
 # MyLangLean · AI 播客影子跟读（OORA 风格复刻）
 
-> 版本：**v0.2.0（MVP 真机验收通过）** ｜ 更新日期：2026-09-28
+> 版本：**v0.4.0（PC 服务端 + 云同步 + OTA）** ｜ 更新日期：2026-10-01
 > 现阶段可运行：**Android arm64（HBN-AL00 真机实测）** ｜ 设计目标：HarmonyOS 4.2+（HAP 待 NEXT 设备）｜ 架构预留：iOS 13+
 > 参考产品：https://oora.yoshinn.com.cn/#product （本项目仅用于技术学习，不含其品牌素材）
 
@@ -11,8 +11,11 @@
 
 | 模块 | 实现 |
 |---|---|
-| 发现内容 | 发现页（语言/难度筛选）、Mock 目录；FastAPI 已备 PodcastIndex 代理 |
+| 发现内容 | 发现页（语言/难度筛选）；**在线优先**拉取 PC 服务端目录（含 content_version 缓存信封），离线回退本地快照/内置目录；另备 PodcastIndex 代理 |
 | 资料库 | 本地音频/**视频（只播音轨）**导入、字幕配对、杀进程持久化、事后关联/删除 |
+| 云账户/订阅 | 邮箱注册登录 + JWT 游客；订阅云同步，**离线操作队列补偿**（断网退订不复活、重连自动收敛）；资料页下拉同步 |
+| OTA 升级 | 启动静默检查（24h 节流，强制更新例外）+ 手动检查；下载**断点续传、SHA-256 校验**、强制更新不可取消、系统安装器唤起 |
+| PC 服务端/管理台 | FastAPI：用户注册与禁用管理、播客上下架与独家内容发布、订阅管理、APK 发布/Range 分发；零依赖单页管理台（见 [server/README.md](server/README.md)） |
 | 逐词字幕 | 扁平词索引二分定位 + 局部刷新卡拉OK高亮、点词定位、单句循环 |
 | 字幕模式 | 原文 / 双语 / 盲听三态，5 档字号 |
 | 精听 | 单句 AB 循环、0.6–1.5× 变速（原生 MediaPlayer 计时） |
@@ -40,7 +43,7 @@
 cd app
 flutter pub get
 flutter analyze                              # 0 error / 0 warning（仅少量既有 info）
-flutter test                                 # 18/18
+flutter test                                 # 全量用例通过（83 项）
 flutter build apk --release --target-platform android-arm64
 # 产物：app\build\app\outputs\flutter-apk\app-release.apk（约 17MB）
 adb install -r build\app\outputs\flutter-apk\app-release.apk
@@ -96,12 +99,19 @@ cd app
 ..\.tools\flutter\bin\flutter.bat run -d windows   # PAL 自动走 Mock 虚拟时钟播放器
 ```
 
-### 服务端（可选）
+### PC 服务端与运营管理台（v0.4 起为 App 的在线底座）
 
 ```powershell
-.\.tools\venvs\mll\Scripts\python.exe -m pip install -r server\requirements.txt
-cd server; ..\.tools\venvs\mll\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+# 仓库自带 venv 已含全部依赖，无需新增 pip 包
+cd server
+..\.tools\venvs\mll\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# 真机联调：adb reverse tcp:8000 tcp:8000
 ```
+
+- 管理台：浏览器打开 `http://127.0.0.1:8000/admin`，令牌默认 `dev-admin-token`（生产用 `MLL_ADMIN_TOKEN` 覆盖）
+- 能力：用户注册/禁用/重置密码、订阅查看、播客与单集发布及上下架、APK 上传发布（版本/渠道白名单 + sha256）
+- App 发现页、注册登录、订阅、OTA 检查全部走该服务；服务不可用时自动降级为本地缓存/游客模式
+- 接口契约、环境变量（`MLL_DATA_DIR`/`MLL_ADMIN_TOKEN`/`MLL_JWT_SECRET`/`MLL_CORS_ORIGINS` 等）与一键测试见 [server/README.md](server/README.md)
 
 默认 `MLL_ASR_BACKEND=stub` 即可跑通游客→转写→额度→翻译→评分全链路；生产切 faster_whisper（Dockerfile 已备）。
 
@@ -117,10 +127,10 @@ MyLangLean/
 │  ├─ lib/features         discover / library / player / shadowing / history / auth
 │  ├─ android/             Gradle + Kotlin 插件（MediaPlayer/SAF/MediaRecorder）
 │  ├─ ohos/                hvigor + ArkTS 插件（AVPlayer/AVSession，生成物不入库）
-│  └─ test/                18 个测试用例 + 工坊 JSON fixture
+│  └─ test/                全量 widget/单元测试 + 工坊 JSON fixture
 ├─ tools/subtitle-studio/  ★PC 字幕工坊（mll_subtitles：schema/transcriber/translator/cli/studio）
 ├─ ohos_supplement/        生成 ohos 宿主后合入的 ArkTS 插件与权限
-├─ server/                 FastAPI：认证/额度/转写/翻译/评分/发现代理
+├─ server/                 FastAPI：账号/目录发布/订阅同步/OTA 分发/管理台（认证/额度/转写/翻译/评分/发现代理）
 ├─ scripts/                环境切换、模型下载、测试音视频制备、工坊 exe 打包/自检
 ├─ docs/                   软件设计方案（含真机联调调试手册）
 └─ .trae/specs/            字幕工坊需求 spec、任务与评审/验收记录
