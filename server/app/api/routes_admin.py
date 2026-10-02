@@ -9,6 +9,12 @@ from ..models import AccountOut
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
+@router.get("/ping", dependencies=[AdminAuth])
+def admin_ping() -> dict:
+    """管理令牌校验口：管理台保存 Token 后立即验证，失败时给出明确提示。"""
+    return {"ok": True}
+
+
 @router.get("/users", dependencies=[AdminAuth])
 def admin_list_users() -> dict:
     items = []

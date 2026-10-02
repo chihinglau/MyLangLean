@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import sqlite3
@@ -210,6 +211,52 @@ CREATE TABLE IF NOT EXISTS releases (
     size         INTEGER NOT NULL DEFAULT 0,
     sha256       TEXT NOT NULL,
     published_at TEXT NOT NULL
+);
+
+-- 内容采集（爬虫）：订阅源 / 待审批快照 / 抓取任务
+CREATE TABLE IF NOT EXISTS crawl_sources (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL UNIQUE,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    last_crawled_at TEXT NOT NULL DEFAULT '',
+    last_status     TEXT NOT NULL DEFAULT '',
+    last_error      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS crawl_candidates (
+    id                  TEXT PRIMARY KEY,
+    source_id           TEXT REFERENCES crawl_sources(id) ON DELETE SET NULL,
+    feed_url            TEXT NOT NULL,
+    title               TEXT NOT NULL DEFAULT '',
+    author              TEXT NOT NULL DEFAULT '',
+    artwork_url         TEXT,
+    language            TEXT NOT NULL DEFAULT 'en',
+    description         TEXT NOT NULL DEFAULT '',
+    episode_count       INTEGER NOT NULL DEFAULT 0,
+    episodes_json       TEXT NOT NULL DEFAULT '[]',
+    content_hash        TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    imported_podcast_id TEXT,
+    discovered_at       TEXT NOT NULL,
+    reviewed_at         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_candidates_status
+    ON crawl_candidates(status, discovered_at);
+CREATE INDEX IF NOT EXISTS idx_candidates_feed
+    ON crawl_candidates(feed_url, discovered_at);
+
+CREATE TABLE IF NOT EXISTS crawl_jobs (
+    id             TEXT PRIMARY KEY,
+    trigger        TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    sources_total  INTEGER NOT NULL DEFAULT 0,
+    sources_ok     INTEGER NOT NULL DEFAULT 0,
+    candidates_new INTEGER NOT NULL DEFAULT 0,
+    message        TEXT NOT NULL DEFAULT '',
+    started_at     TEXT NOT NULL,
+    finished_at    TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -950,3 +997,430 @@ def has_update(current: str, latest: dict[str, Any]) -> bool:
             and int(latest["build_no"]) > cur_build:
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# 内容采集（爬虫）：订阅源 / 候选快照 / 抓取任务 / 审批导入
+# ---------------------------------------------------------------------------
+
+def source_out(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "url": row["url"],
+        "enabled": bool(row["enabled"]),
+        "last_crawled_at": row["last_crawled_at"],
+        "last_status": row["last_status"],
+        "last_error": row["last_error"],
+        "created_at": row["created_at"],
+    }
+
+
+def candidate_out(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        episodes = json.loads(row["episodes_json"])
+    except (TypeError, ValueError):
+        episodes = []
+    return {
+        "id": row["id"],
+        "sourceId": row["source_id"],
+        "feedUrl": row["feed_url"],
+        "title": row["title"],
+        "author": row["author"],
+        "artworkUrl": row["artwork_url"],
+        "language": row["language"],
+        "description": row["description"],
+        "episodeCount": row["episode_count"],
+        "episodes": episodes,
+        "contentHash": row["content_hash"],
+        "status": row["status"],
+        "importedPodcastId": row["imported_podcast_id"],
+        "discoveredAt": row["discovered_at"],
+        "reviewedAt": row["reviewed_at"],
+    }
+
+
+def job_out(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "trigger": row["trigger"],
+        "status": row["status"],
+        "sourcesTotal": row["sources_total"],
+        "sourcesOk": row["sources_ok"],
+        "candidatesNew": row["candidates_new"],
+        "message": row["message"],
+        "startedAt": row["started_at"],
+        "finishedAt": row["finished_at"],
+    }
+
+
+def create_source(name: str, url: str) -> sqlite3.Row:
+    sid = uuid.uuid4().hex
+    ts = now_iso()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO crawl_sources (id, name, url, enabled,"
+            " last_crawled_at, last_status, last_error, created_at)"
+            " VALUES (?,?,?,1,'','','',?)",
+            (sid, (name or "").strip()[:120], url.strip(), ts),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_sources WHERE id=?",
+                            (sid,)).fetchone()
+    finally:
+        conn.close()
+
+
+def get_source_by_url(url: str) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM crawl_sources WHERE url=?",
+                            (url.strip(),)).fetchone()
+    finally:
+        conn.close()
+
+
+def list_sources() -> list[sqlite3.Row]:
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM crawl_sources ORDER BY created_at, id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def get_source(source_id: str) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM crawl_sources WHERE id=?",
+                            (source_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def update_source(source_id: str, *, enabled: bool | None = None,
+                  name: str | None = None) -> sqlite3.Row | None:
+    sets: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        sets.append("enabled=?")
+        params.append(1 if enabled else 0)
+    if name is not None:
+        sets.append("name=?")
+        params.append(name.strip()[:120])
+    if not sets:
+        return get_source(source_id)
+    params.append(source_id)
+    conn = connect()
+    try:
+        conn.execute(f"UPDATE crawl_sources SET {', '.join(sets)} WHERE id=?",
+                     params)
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_sources WHERE id=?",
+                            (source_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def delete_source(source_id: str) -> bool:
+    conn = connect()
+    try:
+        cur = conn.execute("DELETE FROM crawl_sources WHERE id=?",
+                           (source_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_source_crawled(source_id: str, ok: bool, error: str = "") -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE crawl_sources SET last_crawled_at=?, last_status=?,"
+            " last_error=? WHERE id=?",
+            (now_iso(), "ok" if ok else "error", error[:500], source_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---- 抓取任务 ----
+
+def create_job(trigger: str) -> sqlite3.Row:
+    jid = uuid.uuid4().hex
+    ts = now_iso()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO crawl_jobs (id, trigger, status, sources_total,"
+            " sources_ok, candidates_new, message, started_at, finished_at)"
+            " VALUES (?,?, 'running',0,0,0,'',?, '')",
+            (jid, trigger, ts),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_jobs WHERE id=?",
+                            (jid,)).fetchone()
+    finally:
+        conn.close()
+
+
+def finish_job(job_id: str, *, status: str, sources_total: int,
+               sources_ok: int, candidates_new: int,
+               message: str) -> sqlite3.Row:
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE crawl_jobs SET status=?, sources_total=?, sources_ok=?,"
+            " candidates_new=?, message=?, finished_at=? WHERE id=?",
+            (status, sources_total, sources_ok, candidates_new,
+             message[:2000], now_iso(), job_id),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_jobs WHERE id=?",
+                            (job_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def get_job(job_id: str) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM crawl_jobs WHERE id=?",
+                            (job_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def list_jobs(limit: int = 20) -> list[sqlite3.Row]:
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM crawl_jobs ORDER BY started_at DESC, id DESC"
+            " LIMIT ?", (max(1, min(limit, 100)),)).fetchall()
+    finally:
+        conn.close()
+
+
+# ---- 待审批候选 ----
+
+def latest_candidate(feed_url: str) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM crawl_candidates WHERE feed_url=?"
+            " ORDER BY discovered_at DESC, id DESC LIMIT 1",
+            (feed_url,)).fetchone()
+    finally:
+        conn.close()
+
+
+def get_candidate(candidate_id: str) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM crawl_candidates WHERE id=?",
+                            (candidate_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def list_candidates(status: str | None = None) -> list[sqlite3.Row]:
+    conn = connect()
+    try:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM crawl_candidates WHERE status=?"
+                " ORDER BY discovered_at DESC, id DESC",
+                (status,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM crawl_candidates"
+                " ORDER BY discovered_at DESC, id DESC").fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def insert_candidate(*, source_id: str | None, feed_url: str, title: str,
+                     author: str, artwork_url: str | None, language: str,
+                     description: str, episodes: list[dict[str, Any]],
+                     content_hash: str) -> sqlite3.Row:
+    cid = uuid.uuid4().hex
+    ts = now_iso()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO crawl_candidates (id, source_id, feed_url, title,"
+            " author, artwork_url, language, description, episode_count,"
+            " episodes_json, content_hash, status, imported_podcast_id,"
+            " discovered_at, reviewed_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', NULL, ?, '')",
+            (cid, source_id, feed_url, title, author, artwork_url, language,
+             description, len(episodes), json.dumps(episodes, ensure_ascii=False),
+             content_hash, ts),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_candidates WHERE id=?",
+                            (cid,)).fetchone()
+    finally:
+        conn.close()
+
+
+def refresh_pending_candidate(candidate_id: str, *, feed_url: str,
+                              title: str, author: str,
+                              artwork_url: str | None, language: str,
+                              description: str, episodes: list[dict[str, Any]],
+                              content_hash: str) -> sqlite3.Row:
+    """同一 feed 已有待审批快照时原地刷新（避免收件箱堆积重复项）。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE crawl_candidates SET feed_url=?, title=?, author=?,"
+            " artwork_url=?, language=?, description=?, episode_count=?,"
+            " episodes_json=?, content_hash=?, discovered_at=?"
+            " WHERE id=? AND status='pending'",
+            (feed_url, title, author, artwork_url, language, description,
+             len(episodes), json.dumps(episodes, ensure_ascii=False),
+             content_hash, now_iso(), candidate_id),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_candidates WHERE id=?",
+                            (candidate_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def mark_candidate_reviewed(candidate_id: str, status: str,
+                            imported_podcast_id: str | None = None
+                            ) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE crawl_candidates SET status=?, imported_podcast_id=?,"
+            " reviewed_at=? WHERE id=?",
+            (status, imported_podcast_id, now_iso(), candidate_id),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM crawl_candidates WHERE id=?",
+                            (candidate_id,)).fetchone()
+    finally:
+        conn.close()
+
+
+def supersede_pending(feed_url: str, keep_id: str) -> int:
+    """审批后，把同一 feed 的其它待审批快照标记为 rejected。"""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE crawl_candidates SET status='rejected', reviewed_at=?"
+            " WHERE feed_url=? AND status='pending' AND id<>?",
+            (now_iso(), feed_url, keep_id),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def _safe_lang(code: Any) -> str:
+    """播客/单集 language 列要求两位小写字母，非法值回退 en。"""
+    text = str(code or "").strip().lower()
+    if len(text) >= 2 and text[:2].isalpha():
+        return text[:2]
+    return "en"
+
+
+def import_candidate(candidate_id: str, *, publish: bool = True,
+                     level: str = "beginner") -> dict[str, Any]:
+    """审批通过：导入为正式播客 + 单集（同 feed 二次导入只补新增单集）。
+
+    以 enclosure 的 audio_url 作为单集去重键（RSS guid 不落库）。
+    """
+    if level not in VALID_LEVELS:
+        raise ValueError(f"非法 level: {level}")
+    cand = get_candidate(candidate_id)
+    if cand is None:
+        return None  # type: ignore[return-value]
+    episodes = []
+    try:
+        episodes = json.loads(cand["episodes_json"])
+    except (TypeError, ValueError):
+        episodes = []
+    ts = now_iso()
+    conn = connect()
+    try:
+        pid = cand["imported_podcast_id"]
+        pod = conn.execute("SELECT * FROM podcasts WHERE id=?",
+                           (pid,)).fetchone() if pid else None
+        if pod is None:
+            # 后续快照本身不带 imported_podcast_id：按 feed_url 找回
+            # 之前已导入的播客，做“只补新增单集”的增量同步。
+            pod = conn.execute("SELECT * FROM podcasts WHERE feed_url=?",
+                               (cand["feed_url"],)).fetchone()
+        if pod is None:
+            pid = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO podcasts (id, title, author, feed_url, artwork_url,"
+                " language, level, description, published, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (pid, cand["title"], cand["author"], cand["feed_url"],
+                 cand["artwork_url"], _safe_lang(cand["language"]), level,
+                 cand["description"], 1 if publish else 0, ts, ts),
+            )
+        else:
+            pid = pod["id"]
+            # 已导入过：刷新元数据，但保留管理员后续设置的 published/level。
+            conn.execute(
+                "UPDATE podcasts SET title=?, author=?, artwork_url=?,"
+                " language=?, description=?, updated_at=? WHERE id=?",
+                (cand["title"], cand["author"], cand["artwork_url"],
+                 _safe_lang(cand["language"]), cand["description"], ts, pid),
+            )
+
+        existing = {
+            r["audio_url"] for r in conn.execute(
+                "SELECT audio_url FROM episodes WHERE podcast_id=?", (pid,))
+        }
+        inserted = 0
+        for ep in episodes:
+            audio_url = str(ep.get("audioUrl") or "").strip()
+            if not audio_url or audio_url in existing:
+                continue
+            conn.execute(
+                "INSERT INTO episodes (id, podcast_id, title, audio_url,"
+                " duration_ms, pub_date, language, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (uuid.uuid4().hex, pid, str(ep.get("title") or "未命名单集"),
+                 audio_url, int(ep.get("durationMs") or 0),
+                 str(ep.get("pubDate") or "")[:10],
+                 _safe_lang(ep.get("language") or cand["language"]), ts, ts),
+            )
+            existing.add(audio_url)
+            inserted += 1
+        conn.execute("UPDATE podcasts SET updated_at=? WHERE id=?", (ts, pid))
+        conn.execute(
+            "UPDATE crawl_candidates SET status='approved',"
+            " imported_podcast_id=?, reviewed_at=? WHERE id=?",
+            (pid, ts, candidate_id),
+        )
+        conn.execute(
+            "UPDATE crawl_candidates SET status='rejected', reviewed_at=?"
+            " WHERE feed_url=? AND status='pending' AND id<>?",
+            (ts, cand["feed_url"], candidate_id),
+        )
+        conn.commit()
+        pod_row = conn.execute("SELECT * FROM podcasts WHERE id=?",
+                               (pid,)).fetchone()
+        ep_rows = conn.execute(
+            "SELECT * FROM episodes WHERE podcast_id=? ORDER BY pub_date DESC, id",
+            (pid,)).fetchall()
+        return {
+            "podcast": podcast_out(pod_row),
+            "episodes": [episode_out(r) for r in ep_rows],
+            "inserted_episodes": inserted,
+        }
+    finally:
+        conn.close()

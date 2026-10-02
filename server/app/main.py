@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from .api import (
     routes_admin,
     routes_auth,
     routes_catalog,
+    routes_crawl,
     routes_discover,
     routes_me,
     routes_quota,
@@ -19,8 +21,16 @@ from .api import (
 )
 from .core import db
 from .core.config import SERVER_DIR, get_settings
+from .services import crawler
 
 STATIC_ADMIN_DIR = SERVER_DIR / "static" / "admin"
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 定时内容采集守护线程（间隔由 MLL_CRAWL_INTERVAL_MINUTES 控制）。
+    crawler.start_scheduler()
+    yield
 
 
 def create_app() -> FastAPI:
@@ -34,7 +44,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title=settings.app_name,
-        version="0.4.0",
+        version="0.5.0",
+        lifespan=lifespan,
         description=(
             "MyLangLean 服务端。管理接口需 X-Admin-Token"
             "（MLL_ADMIN_TOKEN，开发默认 dev-admin-token）。"
@@ -60,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_discover.router)
     app.include_router(routes_catalog.router)
     app.include_router(routes_admin.router)
+    app.include_router(routes_crawl.router)
     app.include_router(routes_releases.router)
 
     @app.get("/health")
@@ -88,7 +100,7 @@ def create_app() -> FastAPI:
             response.headers["Cache-Control"] = "no-store, must-revalidate"
             # 管理台为纯内联单文件页面、零外网资源：默认禁止外部来源。
             response.headers["Content-Security-Policy"] = (
-                "default-src 'none'; img-src 'self' data:; "
+                "default-src 'none'; img-src 'self' data: https:; "
                 "style-src 'self' 'unsafe-inline'; "
                 "script-src 'self' 'unsafe-inline'; "
                 "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")

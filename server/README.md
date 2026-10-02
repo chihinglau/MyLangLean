@@ -5,6 +5,24 @@ Android APK 发布与 OTA 升级检查，并托管零构建的运营管理台。
 
 ## 启动
 
+**一键方式**：双击仓库根目录的 `启动PC服务.bat`——自动使用内置 venv 启动 uvicorn、
+检测到真机时自动建立 `adb reverse tcp:8000`、3 秒后自动打开管理台；服务已在运行时
+弹出选择：按 **R** 强制重启、**Q**（8 秒默认）仅打开管理台，不会启动第二个实例。
+
+需要无界面强制操作时，在 bat 后加参数（可放快捷方式里）：
+
+| 命令 | 行为 |
+| --- | --- |
+| `启动PC服务.bat restart` | 强制关闭当前服务后重新启动（先释放 8000，再冷启动） |
+| `启动PC服务.bat stop` | 仅强制关闭：停止服务并关闭脚本窗口 |
+| `启动PC服务.bat start` | 非交互启动；已运行时只打开管理台 |
+
+关闭策略为**定点回收、绝不误杀**：只定位 8000 端口的监听进程并核对命令行含
+`uvicorn`/`app.main`，再沿父链结束启动它的 bat 窗口（逆序终止，避免脚本窗口重读
+文件重新拉起服务）；不会按进程名批量结束其它 `python.exe`。
+
+手动方式：
+
 ```powershell
 # 使用仓库自带 venv（无需安装任何新依赖）
 D:\ai\prj\trae\HuaWei\MyLangLean\.tools\venvs\mll\Scripts\python.exe `
@@ -29,6 +47,10 @@ D:\ai\prj\trae\HuaWei\MyLangLean\.tools\venvs\mll\Scripts\python.exe `
 | `MLL_GUEST_PREVIEW_SEC` | `300` | 游客试听额度（秒） |
 | `MLL_CORS_ORIGINS` | `*` | 允许的跨域来源，逗号分隔（如 `https://a.com,http://localhost:5173`）；管理台响应另带 CSP/nosniff/Referrer-Policy/no-store |
 | `MLL_ASR_BACKEND` | `stub` | ASR 后端（stub / faster_whisper） |
+| `MLL_CRAWL_ENABLED` | `true` | 内容采集定时调度总开关（关闭后仍可手动“立即刷新”） |
+| `MLL_CRAWL_INTERVAL_MINUTES` | `360` | 定时抓取间隔（分钟，默认 6 小时） |
+| `MLL_CRAWL_TIMEOUT_SEC` | `25` | 抓取/解析单个 Feed 的超时（秒） |
+| `MLL_CRAWL_MAX_EPISODES` | `100` | 单个播客导入单集数上限（按发布时间倒序截断） |
 
 首次启动自动建表（WAL + 外键）并播种：8 个播客 × 2 个单集（与 App
 `MockCatalog` 一致），同时把 `app/assets/audio/sample.mp3` 复制到
@@ -87,6 +109,30 @@ D:\ai\prj\trae\HuaWei\MyLangLean\.tools\venvs\mll\Scripts\python.exe `
   /`notes`/`mandatory`；非法字段一律 **422**。落盘文件名由白名单字段+随机 uuid 构成
   （杜绝路径穿越），服务端流式计算 size 与 SHA-256
 - `GET    /admin/releases`、`DELETE /admin/releases/{id}`（删库并连带删除磁盘文件）
+- `GET   /admin/ping` 令牌校验探活（管理台保存/自动带入 Token 后调用，通过才加载数据）
+
+内容采集（`/admin/crawl/*`，同样需要 `X-Admin-Token`；管理台“内容采集”页）：
+
+流程为 **定时/手动抓取 → 进入待审批 → 管理员人工审批 → 导入并按需上架**，
+机器只负责找内容，发布始终由人把关：
+
+- `GET/POST/PATCH/DELETE /admin/crawl/sources[/{id}]` 订阅源（RSS 2.0 / Atom）
+  的增改启停删；`POST` body `{name?,url}`，`PATCH` body `{enabled?}`
+- `POST  /admin/crawl/run` 立即抓取，body `{wait?,sourceIds?}`：默认后台线程执行
+  （单实例锁，重入直接返回进行中的 job），`wait=true` 同步等待
+- `GET   /admin/crawl/jobs[/{id}]` 抓取任务历史与状态
+- `GET   /admin/crawl/search?q=&limit=` 经后端代理检索 iTunes 播客目录
+  （管理台 CSP 禁外网，必须走服务端）
+- `POST  /admin/crawl/fetch` body `{url}` 一次性抓取任意 Feed 进入待审批（不入订阅源）
+- `GET   /admin/crawl/candidates?status=pending|approved|rejected` 候选列表
+- `POST  /admin/crawl/candidates/{id}/approve` body `{level,publish}`：
+  审批通过即导入为播客+单集；`publish=true` 直接上架，`false` 仅入库待后续发布；
+  同一 Feed 二次审批会按 `feed_url` 反查既有播客**增量补新单集**（按 `audio_url` 去重）
+- `POST  /admin/crawl/candidates/{id}/reject` 驳回（可被后续新抓取重新发现）
+
+去重三态：抓取时按 Feed 内容计算 SHA-1 指纹——指纹相同不新增；最新记录为
+pending 则原地刷新；否则新增一条 pending。解析器拒绝 DTD/ENTITY（防 XXE），
+定时任务由启动时的守护线程按 `MLL_CRAWL_INTERVAL_MINUTES` 周期执行。
 
 保留能力：`GET /discover/proxy`（PodcastIndex 代理，未配凭据 503）、
 `/quota`、`/transcriptions[/upload]`、`/translate`、`/score`。

@@ -1,6 +1,6 @@
 # OORA 复刻版（MyLangLean）软件设计方案
 
-> 版本：v1.5 ｜ 日期：2026-10-01（v1.5 在线底座真机全链路闭环：d1-d7 全自动 E2E + KvStore 并发写竞态/会话事件时序两缺陷修复，版本 0.4.1+5；v1.4 PC 在线底座：账户/订阅云同步/发现页联网/OTA 与评审修复闭环；v1.3 2026-09-29；v1.2 2026-09-29；v1.1 2026-09-28；v1.0 初稿 2026-09-27）
+> 版本：v1.6 ｜ 日期：2026-10-02（v1.6 服务端**内容采集与人工审批**：定时 RSS/Atom 爬虫 + iTunes 检索代理 + 指纹三态去重 + 管理台审批导入（可选直接上架）+ 增量补单集；管理台 401 引导修复，服务端版本 0.5.0；v1.5 在线底座真机全链路闭环：d1-d7 全自动 E2E + KvStore 并发写竞态/会话事件时序两缺陷修复，版本 0.4.1+5；v1.4 PC 在线底座：账户/订阅云同步/发现页联网/OTA 与评审修复闭环；v1.3 2026-09-29；v1.2 2026-09-29；v1.1 2026-09-28；v1.0 初稿 2026-09-27）
 > 目标平台：HarmonyOS 4.2.0（设计目标）｜ 现阶段可运行平台：**同机 AOSP 12 兼容层（Android arm64 APK，已真机验收）**
 > 预留移植：iOS 13+
 > 参考产品：https://oora.yoshinn.com.cn/#product
@@ -16,6 +16,7 @@
 | v1.3 | 2026-09-29 | **识别无时长上限 + 歌曲/强背景音乐兜底**：实测发现 Silero VAD 会把伴奏中的演唱判为非人声（3:53 FLAC 只出 8 句、止于约 49s）；改为「VAD 首遍 → 覆盖率<60% 自动无 VAD 全音频重识别（带多语种通用音乐风格提示找回前奏演唱）→ 按词间停顿把长段整理成歌词行」；schema 入库修复零时长词时间戳；frozen_entry 增加隐藏 `--transcribe` 无界面批处理参数（冻结产物可端到端自测）。证据：歌曲 small 档 52 句覆盖 233.4s + 翻译 52/52（新 exe 直跑 EXIT=0/validate OK）、10 分 16 秒口播 134 句无截断（走单次 VAD 无额外开销）、pytest 18 项全绿 |
 | v1.4 | 2026-10-01 | **PC 服务端成为 App 在线底座**：① 邮箱注册/登录/JWT 游客与管理员用户管理（禁用/重置密码/订阅查看）；② 播客/单集发布与上下架（公开目录与用户订阅默认仅见已上架，新增 `GET /admin/podcasts`）；③ 发现页在线优先 + content_version 快照信封、离线回退；④ 订阅云同步采用**待同步操作队列**（`subscriptions.pending`：离线 PUT/DELETE 重放、退订防并集复活、404 目标本地丢弃）；⑤ APK 发布/OTA：字段白名单（platform/channel/version/buildNo，非法 422）、落盘随机名防穿越、Range 206、App 侧会话隔离 + `.part` 断点续传 + SHA-256 校验 + 强制更新不可取消；⑥ 评审 24 项问题闭环（S1 路径穿越、I1 版本容错、I2 删除补偿、I3/I7 下载竞态/续传、I4 强制更新、I5 中文化、I6 XSS、I8 403 降级提示等）。新增 env：`MLL_CORS_ORIGINS`（连同 `MLL_DATA_DIR`/`MLL_ADMIN_TOKEN` 等见 server/README.md）。证据：服务端 7/7、App 83 项全绿、0 error/0 warning、live E2E 34/34、管理台浏览器上下架实测、OTA release id=4（0.4.1+5）206/sha256 一致 |
 | v1.5 | 2026-10-01 | **真机全链路零干预闭环（HBN-AL00，d1-d7 全 PASS）**：覆盖安装/冷启独家内容、pm clear 游客态、注册登录订阅、禁用 403 冷启降级 SnackBar、断网退订 pending 队列与重连 DELETE 收敛防复活、OTA 0.4.1+5（对话框→152MB 下载→设备端 sha256 逐位一致→系统安装器唤起→安装后再查无更新）、pm clear 重登订阅云端恢复。真机环节新发现并修复两缺陷：**R1 KvStore 启动期并发写竞态**（固定 tmp + 无串行化导致 rename 乱序、403 降级中断 → 单调序号串行写链 `prefs.json.tmp.<seq>`，新增 2 条并发用例）；**R2 会话事件时序**（notice 早于首帧被错过、我的页不响应会话变化 → broadcast `notices`/`accountChanges` 流 + 幂等 `sessionReady` 兜底 + `accountRefreshProvider`）。版本双写点（constants.dart/pubspec）统一 0.4.1+5，OTA release **id=6**；App 测试 82/82、0 error/0 warning。沉淀 adb reverse / run-as / 华为安装器（未知来源 appops + 锁屏 PIN）/UI 自动化键盘坐标等真机经验（§14.11） |
+| v1.6 | 2026-10-02 | **服务端内容采集与人工审批（运营减负）**：① 新增 crawler 服务（零新依赖，标准库 `xml.etree`+`threading`+`hashlib`）：RSS 2.0/Atom（含 itunes 扩展）解析、拒绝 DTD/ENTITY 防 XXE、iTunes Search API 检索代理、SHA-1 内容指纹**三态去重**（相同跳过/pending 原地刷新/否则新增）、守护线程定时调度 + 单实例锁；② 新增 3 表 `crawl_sources`/`crawl_candidates`/`crawl_jobs` 与全套仓储；③ `/api/v1/admin/crawl/*`：订阅源增改启停删、立即刷新（后台线程+轮询）、任务历史、关键词检索、单次抓取、候选审批（选难度 + 是否直接上架）/驳回，审批按 feed_url 反查既有播客**增量补新单集**（audio_url 去重）；④ 管理台新增「内容采集」页（抓取任务/订阅源/检索结果/待审批展开单集明细），零外网单文件 CSP 下检索走后端代理、封面放开 https img；⑤ **401 修复**：新增 `GET /admin/ping` 令牌探活，回环地址自动带入 dev token、校验通过才加载、无 token 显示引导；新增 env `MLL_CRAWL_ENABLED/INTERVAL_MINUTES/TIMEOUT_SEC/MAX_EPISODES`。服务端 0.5.0，测试 8 模块全绿（新增 test_crawl 11 例），真实 feed（libsyn/audiomeans）与浏览器审批全链路实测通过 |
 
 ---
 
@@ -29,7 +30,7 @@
 
 | 编号 | 模块 | 功能点 | MVP | 二期 | 2026-09-28 状态 |
 |---|---|---|---|---|---|
-| F1 | 发现内容 | 精选播客、RSS 搜索/订阅、iTunes/PodcastIndex 检索、语言/主题/难度筛选 | ✅ | | UI + Mock 目录完成；服务端代理已备 |
+| F1 | 发现内容 | 精选播客、RSS 搜索/订阅、iTunes/PodcastIndex 检索、语言/主题/难度筛选 | ✅ | | UI + Mock 目录完成；服务端代理已备；**v1.6 起服务端可经 iTunes 代理检索并抓取 RSS/Atom 源（见 F9）** |
 | F2 | 内容管理 | 本地音视频导入、播客单集下载、收藏、个人资料库 | ✅ | | **Android SAF 导入 + JSON 持久化已真机验收**；OH picker 协议预留 |
 | F3 | 逐词字幕 | ASR 自动转录、逐词时间轴、播放同步卡拉OK高亮、点词定位、单句循环 | ✅ | | **App 播放高亮 + PC 字幕工坊生产链路全部真机验收** |
 | F4 | 翻译理解 | 多语种互译、原文/译文对照、字幕样式（字号/显隐/盲听）、点词查词 | ✅ | | 双语切换/盲听/字号完成；**译文由字幕工坊一键机翻或人工填入口写入字幕文件（v1.2）**；无译文时双语模式显式横幅/占位提示，盲听可按需揭示当前句与译文 |
@@ -37,6 +38,7 @@
 | F6 | 账户额度 | 游客设备ID免登（字幕试看 5 分钟）、登录注册、每月 100 分钟转录额度 | ✅ | 订阅 | **v1.4 起 App 已接真实服务端**：注册/登录/JWT、游客降级、月度额度、禁用 403 提示、管理员禁用/重置密码；v1.5 真机验收 |
 | F7 | 履历作品 | 练习历史、录音作品管理、成长曲线 | ✅ | 一键成片/分享 | 履历页 + 本地记录完成 |
 | F8 | 播放能力 | 后台播放、锁屏控制（AVSession）、播放队列、离线播放、进度记忆 | ✅ | 跨设备同步 | Android：WAKE_LOCK 离线播放/变速/AB 完成；OH AVSession 代码已写待 NEXT 真机 |
+| F9 | 内容运营（管理端） | RSS/Atom 订阅源定时抓取、关键词网络检索、抓取结果人工审批后导入并发布 | ✅ | | **v1.6 完成**：管理台「内容采集」页——定时/手动爬虫→待审批（指纹去重）→管理员选难度、批准导入（可直接上架或暂存）/驳回；真实 feed 与浏览器实测通过（§6.5） |
 
 ### 1.3 关键用户流程
 ```
@@ -243,6 +245,11 @@ SAF 选媒体(uri) ──后台线程复制──▶ filesDir/imports/<name>（�
 （扩展名 `.apk` 400 + 字段白名单 422 双校验；落盘名 `{platform}-{version}-{buildNo}-{uuid8}.apk`，
 1MB 分块流式写盘并增量计算 SHA-256；删除发布连带清理磁盘文件）。
 
+令牌与引导（v1.6）：`GET /admin/ping` 仅校验 `X-Admin-Token` 是否有效；管理台打开时
+先 ping 再加载数据——本地回环（127.0.0.1/localhost/::1）自动带入默认 `dev-admin-token`，
+校验通过才请求 `/admin/users`（根除「GET /admin/users -> 401 管理令牌缺失或无效」），
+无令牌时显示填写引导并支持回车保存，非回环环境不自动注入。
+
 ### 6.3 App 侧同步与 OTA 关键设计（v1.4）
 
 - **订阅一致性**：本地乐观更新即时响应 UI；每次 toggle 写入 KV 操作队列
@@ -255,11 +262,14 @@ SAF 选媒体(uri) ──后台线程复制──▶ filesDir/imports/<name>（�
   完成后整文件 SHA-256 与发布记录比对通过才 rename；强制更新 PopScope 禁返回、下载中无取消、
   失败仅可重试；安装走自写非导出 FileProvider 调起系统包安装器，O+ 先引导未知来源权限。
 - **配置**：`MLL_DATA_DIR` / `MLL_ADMIN_TOKEN` / `MLL_JWT_SECRET` / `MLL_CORS_ORIGINS`
-  （逗号分隔，默认 `*`）/ `MLL_MONTHLY_QUOTA_SEC` / `MLL_GUEST_PREVIEW_SEC` / `MLL_ASR_BACKEND`，
+  （逗号分隔，默认 `*`）/ `MLL_MONTHLY_QUOTA_SEC` / `MLL_GUEST_PREVIEW_SEC` / `MLL_ASR_BACKEND`
+  / `MLL_CRAWL_ENABLED` / `MLL_CRAWL_INTERVAL_MINUTES` / `MLL_CRAWL_TIMEOUT_SEC`
+  / `MLL_CRAWL_MAX_EPISODES`（后四项 v1.6 起，见 §6.5），
   完整契约见 [server/README.md](file:///d:/ai/prj/trae/HuaWei/MyLangLean/server/README.md)。
 
-`server/` 测试：`tests/run_all.py` 一键 7 模块（test_auth/admin/catalog/subscriptions/
-releases/db_seed + smoke，v1.4 起全绿）；另含 live E2E 脚本 `.tools_e2e_live.py`（每次新建
+`server/` 测试：`tests/run_all.py` 一键 **8 模块**（test_auth/admin/catalog/crawl/subscriptions/
+releases/db_seed + smoke，v1.6 起全绿；其中 test_crawl 11 例覆盖 RSS/Atom 字段、
+去重三态、XXE 拒绝、审批导入发布、增量补单集与源启停）；另含 live E2E 脚本 `.tools_e2e_live.py`（每次新建
 账号，注册→订阅→独家发布→上下架→禁用→OTA 共 34 项）与管理辅助脚本 `.tools_check_dev.py
 <email> [show|disable|enable]`（admin token 查/禁用/启用测试账号并核对订阅数）。默认
 `MLL_ASR_BACKEND=stub` 无 GPU 可跑通，生产切 `faster_whisper`（Dockerfile/compose 已备）。
@@ -299,6 +309,67 @@ releases/db_seed + smoke，v1.4 起全绿）；另含 live E2E 脚本 `.tools_e2
 **③ 版本号单一事实**：App 版本存在两处显式常量（`Env.appVersion/appBuildNumber` 与
 pubspec `version:`），发版必须同步；v1.5 起均为 **0.4.1+5**，OTA 自报版本与安装包一致，
 `/releases/latest?current=0.4.1+5` 返回 `has_update:false`。
+
+### 6.5 内容采集与人工审批（v1.6，[crawler.py](../server/app/services/crawler.py) / [routes_crawl.py](../server/app/api/routes_crawl.py)）
+
+**目标**：减轻内容运营压力——机器负责定时找内容，管理员只做审批；未经人工批准的抓取
+结果**绝不进入公开目录**。
+
+```
+定时调度(守护线程, 默认6h) ┐
+                          ├─▶ run_crawl(单实例锁) ─▶ 抓 RSS/Atom ─▶ 指纹去重 ─▶ crawl_candidates(pending)
+管理台「立即刷新」/单源抓取┘                                                                        │
+关键词检索(iTunes 代理) ─▶「直接采集待审」/「加入订阅源」                                          ▼
+                                                                       管理员审批：选难度 + 是否直接上架
+                                                                                    │ approve        │ reject
+                                                                        导入 podcasts+episodes    标记 rejected
+                                                                        （按 audio_url 去重、增量补集）  （可被再次发现）
+```
+
+- **数据表（3 张，随 SCHEMA 自动建）**：
+  - `crawl_sources`：订阅源 name/url/enabled，last_status/last_error/last_crawled_at 可观测；
+  - `crawl_candidates`：待审内容——feed_url、title/author/artwork_url/language/description、
+    episode_count、episodes_json、`content_hash`(SHA-1)、status(pending/approved/rejected)、
+    imported_podcast_id、discovered_at/reviewed_at；source_id 删源时 SET NULL（候选保留）；
+  - `crawl_jobs`：每次抓取的 trigger(schedule/manual)、status(running/ok/error)、
+    sources_ok/total、candidates_new、message、起止时间。
+- **解析与安全**：标准库 `xml.etree.ElementTree`，兼容 RSS 2.0 与 Atom（含 itunes 扩展字段）；
+  **解析前拒绝含 `<!DOCTYPE`/`<!ENTITY` 的 Feed（防 XXE）**；抓取走 httpx 并带超时
+  （`MLL_CRAWL_TIMEOUT_SEC` 默认 25s）与 User-Agent；单源导入单集数受
+  `MLL_CRAWL_MAX_EPISODES`（默认 100）限制；language 归一为两位小写以满足 DB 约束。
+- **指纹三态去重**：对规范化后的 Feed 内容算 SHA-1——指纹与最新记录相同→不新增；
+  最新为 pending→**原地刷新**（元数据/单集/时间更新）；否则新增一条 pending。
+  驳回项在 Feed 再次变化（指纹更新）时可重新进入待审。
+- **审批导入**：approve body `{level, publish}`——`publish=true` 直接上架，`false`
+  仅入库待「内容发布」页后续上架；同一 feed 二次审批按 `feed_url` 反查既有播客做
+  **增量补单集**（按 `audio_url` 去重），不重复建播客；审批时同 feed 其它 pending
+  自动 supersede 为 rejected。
+- **调度**：FastAPI lifespan 启动守护线程，间隔 `MLL_CRAWL_INTERVAL_MINUTES`（默认 360）
+  仅抓 enabled 源；`MLL_CRAWL_ENABLED=false` 关停定时任务（手动接口仍可用）；
+  `POST /crawl/run` 默认后台线程执行并由管理台 1.5s 轮询，`wait=true` 同步；
+  并发触发经 `threading.Lock` 单实例化，重入返回进行中的 job。
+- **接口（前缀 `/api/v1/admin/crawl`，全部 AdminAuth）**：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET/POST/PATCH/DELETE | /sources[/{id}] | 订阅源增改启停删（PATCH `{enabled?}`） |
+| POST | /run | 立即抓取，body `{wait?,sourceIds?}`（空=全部启用源） |
+| GET | /jobs[/{id}] | 任务历史（含 running 态供轮询） |
+| GET | /search?q=&limit= | iTunes 播客目录检索（后端代理，管理台 CSP 禁外网直连） |
+| POST | /fetch | body `{url}` 单次抓取入待审（不落订阅源） |
+| GET | /candidates?status= | pending/approved/rejected 候选列表 |
+| POST | /candidates/{id}/approve | body `{level,publish}` 审批导入 |
+| POST | /candidates/{id}/reject | 驳回 |
+
+- **管理台**：新增「内容采集」tab（切到才懒加载）——抓取任务表（状态 tag/成功数/新增数/
+错误信息 title）、订阅源表（行内启停/立即抓取/删除）、添加源后自动抓取、关键词检索结果
+内联同表（可「加入订阅源并抓取」或「直接采集待审」）、待审批表（封面 https 图、
+展开单集明细、难度下拉、直接上架勾选、批准/驳回确认）。CSP 仅为封面图放开 `img-src https:`，
+`connect-src` 仍为 `'self'`。
+- **实测（2026-10-02）**：iTunes 检索真实返回；libsyn（30 集）/audiomeans（10 集）真实
+feed 抓取→审批→上架→公开目录可见全链路通过；浏览器验证展开明细、审批 toast、已通过筛选、
+检索结果与源删除；测试数据已清理。注：部分源站（如实测中的 spreaker.com）在本机网络
+不可达时任务标记 error 并在 jobs 表/源 last_error 中留因，不影响其它源。
 
 ---
 
@@ -685,3 +756,4 @@ prefs.json 关键键：`auth.token`（JWT，payload `guest:true` 区分游客）
 | 长字幕高亮卡顿 | 局部刷新 + 句级懒加载 + 词索引二分 |
 | 真实容器/语种兼容 | 14.10 已列待覆盖清单，先文档化再逐项验 |
 | 版权 | 仅个人学习缓存、不分发、标注原 feed |
+| 外部 Feed 不可达/恶意 XML | v1.6：单源超时（默认 25s）隔离失败、job/源记录错误原因不拖垮整批；拒绝 DTD/ENTITY 防 XXE；人工审批闸门保证抓取内容不自动发布；单源单集数上限 100 |

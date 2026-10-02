@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
 
+    # 内容采集：后台守护线程定时抓取已启用 RSS 源；间隔分钟（默认 6 小时）。
+    # MLL_CRAWL_ENABLED=false 可关闭调度（手动“立即刷新”仍可用）。
+    crawl_enabled: bool = True
+    crawl_interval_minutes: int = 360
+    crawl_timeout_sec: float = 25.0
+    crawl_max_episodes: int = 100
+
     @property
     def db_path(self) -> Path:
         return Path(self.data_dir) / "mll.db"

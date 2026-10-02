@@ -77,6 +77,7 @@
   <nav>
     <button data-tab="users" class="active">用户管理</button>
     <button data-tab="content">内容发布</button>
+    <button data-tab="crawl">内容采集</button>
     <button data-tab="subscriptions">订阅查看</button>
     <button data-tab="releases">版本发布</button>
   </nav>
@@ -121,6 +122,56 @@
       <th>ID</th><th>标题</th><th>语言/难度</th><th>状态</th>
       <th>单集</th><th>操作</th>
     </tr></thead><tbody id="pods-body"></tbody></table>
+  </section>
+
+  <!-- 内容采集（爬虫 + 审批导入） -->
+  <section class="card" data-section="crawl">
+    <h2>内容采集（定时爬虫 / 网络检索 / 审批后导入发布）</h2>
+
+    <h3>抓取任务</h3>
+    <div class="row">
+      <button class="act primary" id="btn-crawl-run" type="button">立即刷新全部启用源</button>
+      <span id="crawl-job-state" class="hint" style="margin:0"></span>
+    </div>
+    <p class="hint">后台按服务配置的间隔（默认 6 小时，MLL_CRAWL_INTERVAL_MINUTES）自动抓取；
+      内容指纹去重，仅新增或有更新的播客会进入下方待审批列表。</p>
+    <table><thead><tr>
+      <th>开始时间</th><th>触发</th><th>状态</th><th>源成功</th>
+      <th>新增待审</th><th>信息</th>
+    </tr></thead><tbody id="crawl-jobs-body"></tbody></table>
+
+    <h3>订阅源（RSS / Atom）与网络检索</h3>
+    <div class="grid">
+      <div><label>名称（可选）</label><input id="cs-name" placeholder="例如：慢速法语"></div>
+      <div><label>Feed URL（http/https）</label>
+        <input id="cs-url" placeholder="https://example.com/podcast.xml"></div>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="act" id="btn-cs-add" type="button">添加订阅源</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input class="inline" id="cs-search" style="width:320px"
+             placeholder="关键词网络检索（iTunes，如 slow french）">
+      <button class="act" id="btn-cs-search" type="button">检索播客</button>
+    </div>
+    <table><thead><tr>
+      <th>名称 / 检索结果</th><th>Feed</th><th>状态</th><th>最近抓取</th>
+      <th>操作</th>
+    </tr></thead><tbody id="cs-body"></tbody></table>
+
+    <h3>待审批内容（审批通过后导入并发布到“内容发布”）</h3>
+    <div class="row">
+      <select id="cand-filter" class="inline">
+        <option value="pending">待审批</option>
+        <option value="approved">已通过</option>
+        <option value="rejected">已驳回</option>
+      </select>
+      <button class="act" id="btn-cand-refresh" type="button">刷新列表</button>
+    </div>
+    <table><thead><tr>
+      <th>播客</th><th>语言</th><th>单集</th><th>发现时间 / 状态</th>
+      <th>审批操作</th>
+    </tr></thead><tbody id="cand-body"></tbody></table>
   </section>
 
   <!-- 订阅查看 -->
@@ -186,16 +237,36 @@
     el._t = setTimeout(function () { el.style.display = "none"; }, 3200);
   }
 
-  function saveToken() {
-    localStorage.setItem("mll_admin_token", tokenEl.value.trim());
-    refreshTokenState();
+  function saveToken(done) {
+    var t = tokenEl.value.trim();
+    localStorage.setItem("mll_admin_token", t);
+    if (!t) {
+      stateEl.textContent = "未设置 Token";
+      if (done) done(false);
+      return;
+    }
+    stateEl.textContent = "校验中…";
+    api("GET", "/admin/ping").then(function () {
+      stateEl.textContent = "Token 有效";
+      if (done) done(true);
+    }).catch(function () {
+      stateEl.textContent = "Token 无效或已过期（401）";
+      if (done) done(false);
+    });
   }
   function refreshTokenState() {
     var t = localStorage.getItem("mll_admin_token") || "";
     if (!tokenEl.value) tokenEl.value = t;
-    stateEl.textContent = t ? "Token 已保存" : "未设置 Token";
+    stateEl.textContent = t ? "Token 已保存（点“保存 Token”校验）" : "未设置 Token";
   }
-  $("btn-login").addEventListener("click", saveToken);
+  $("btn-login").addEventListener("click", function () {
+    saveToken(function (ok) { toast(ok ? "Token 校验通过" : "管理 Token 无效，请重新输入"); });
+  });
+  tokenEl.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") {
+      saveToken(function (ok) { if (ok) toast("Token 校验通过"); });
+    }
+  });
 
   function api(method, path, opts) {
     opts = opts || {};
@@ -480,7 +551,302 @@
       .then(loadReleases).catch(function (e) { toast(e.message); });
   });
 
-  refreshTokenState();
+  // ---- 内容采集（爬虫 / 审批导入） ----
+  var crawlSourcesCache = [];
+  var crawlSearchCache = [];
+  var crawlPollTimer = null;
+
+  function fmtJob(j) {
+    return "<tr><td>" + esc(j.startedAt || "") + "</td><td>"
+      + esc(j.trigger === "schedule" ? "定时" : "手动") + "</td><td>"
+      + '<span class="tag ' + (j.status === "ok" ? "" : "off") + '">'
+      + esc(j.status) + "</span></td><td>" + j.sourcesOk + "/" + j.sourcesTotal
+      + '</td><td>' + j.candidatesNew + '</td><td title="' + esc(j.message || "")
+      + '" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+      + esc(j.message || "") + "</td></tr>";
+  }
+
+  function loadCrawlJobs(activeTab) {
+    return api("GET", "/admin/crawl/jobs?limit=8").then(function (d) {
+      $("crawl-jobs-body").innerHTML = d.items.length
+        ? d.items.map(fmtJob).join("")
+        : '<tr><td colspan="6" style="text-align:center;color:#9ca3af">暂无任务</td></tr>';
+      return d;
+    });
+  }
+
+  // 触发抓取（sourceIds 为空 = 全部启用源），后台执行后轮询任务状态。
+  function runCrawl(sourceIds) {
+    $("crawl-job-state").textContent = "抓取进行中…";
+    api("POST", "/admin/crawl/run", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sourceIds ? { sourceIds: sourceIds } : {})
+    }).then(function (job) {
+      pollCrawlJob();
+    }).catch(function (e) {
+      $("crawl-job-state").textContent = "";
+      toast(e.message);
+    });
+  }
+  function pollCrawlJob() {
+    clearTimeout(crawlPollTimer);
+    crawlPollTimer = setTimeout(function () {
+      loadCrawlJobs().then(function (d) {
+        var busy = (d.running && d.running.status === "running")
+          || (d.items[0] && d.items[0].status === "running");
+        if (busy) {
+          $("crawl-job-state").textContent = "抓取进行中…";
+          pollCrawlJob();
+        } else {
+          $("crawl-job-state").textContent = "抓取完成";
+          loadCrawlSources();
+          loadCandidates();
+        }
+      }).catch(function (e) { toast(e.message); });
+    }, 1500);
+  }
+  $("btn-crawl-run").addEventListener("click", function () { runCrawl(null); });
+  // 切到采集页时加载数据（懒加载，避免无谓请求）。
+  document.querySelector('nav button[data-tab="crawl"]')
+    .addEventListener("click", function () {
+      loadCrawlJobs();
+      loadCrawlSources();
+      loadCandidates();
+    });
+
+  // ---- 订阅源 ----
+  function sourceRow(s) {
+    var errTip = s.last_error ? ' title="' + esc(s.last_error) + '"' : "";
+    return "<tr" + errTip + "><td>" + esc(s.name || "(未命名)") + "</td><td>"
+      + esc(s.url) + '</td><td><span class="tag ' + (s.enabled ? "" : "off")
+      + '">' + (s.enabled ? "启用" : "停用") + " "
+      + (s.last_status ? "· " + esc(s.last_status) : "") + "</span></td><td>"
+      + esc(s.last_crawled_at || "—") + '</td><td><div class="row">'
+      + '<button class="act small" data-cs="toggle" data-id="' + s.id + '">'
+      + (s.enabled ? "停用" : "启用") + "</button>"
+      + '<button class="act small" data-cs="run" data-id="' + s.id + '">立即抓取</button>'
+      + '<button class="act small danger" data-cs="del" data-id="' + s.id + '">删除</button>'
+      + "</div></td></tr>";
+  }
+  function searchRow(r, exists) {
+    var btns = exists
+      ? '<span class="hint">已在订阅源</span>'
+      : '<button class="act small" data-cs="addsearch" data-url="'
+        + esc(r.feedUrl) + '" data-name="' + esc(r.title || "") + '">加入订阅源并抓取</button>';
+    return "<tr><td>🔎 " + esc(r.title) + '<div class="hint">' + esc(r.author)
+      + "</div></td><td>" + esc(r.feedUrl) + '</td><td><span class="tag">'
+      + esc((r.genres || []).slice(0, 2).join(" / ") || "检索结果") + "</span></td>"
+      + '<td>—</td><td><div class="row">' + btns
+      + ' <button class="act small" data-cs="fetchone" data-url="'
+      + esc(r.feedUrl) + '">直接采集待审</button></div></td></tr>';
+  }
+  function renderCrawlSources() {
+    var html = crawlSourcesCache.map(sourceRow).join("");
+    if (crawlSearchCache.length) {
+      var existing = {};
+      crawlSourcesCache.forEach(function (s) { existing[s.url] = true; });
+      html += '<tr><td colspan="5" class="hint" style="background:#f9fafb">'
+        + "—— 网络检索结果 ——</td></tr>"
+        + crawlSearchCache.map(function (r) {
+            return searchRow(r, existing[r.feedUrl]);
+          }).join("");
+    }
+    $("cs-body").innerHTML = html
+      || '<tr><td colspan="5" style="text-align:center;color:#9ca3af">'
+         + "还没有订阅源：粘贴 RSS/Atom 地址，或用上方关键词检索</td></tr>";
+  }
+  function loadCrawlSources() {
+    return api("GET", "/admin/crawl/sources").then(function (d) {
+      crawlSourcesCache = d.items;
+      renderCrawlSources();
+    });
+  }
+  $("btn-cs-add").addEventListener("click", function () {
+    var url = $("cs-url").value.trim(), name = $("cs-name").value.trim();
+    if (!url) { toast("请填写 Feed URL"); return; }
+    api("POST", "/admin/crawl/sources", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, url: url })
+    }).then(function (s) {
+      toast("订阅源已添加，立即抓取…");
+      $("cs-url").value = ""; $("cs-name").value = "";
+      return loadCrawlSources().then(function () { runCrawl([s.id]); });
+    }).catch(function (e) { toast(e.message); });
+  });
+  $("btn-cs-search").addEventListener("click", function () {
+    var q = $("cs-search").value.trim();
+    if (!q) { toast("请输入检索关键词"); return; }
+    api("GET", "/admin/crawl/search?q=" + encodeURIComponent(q) + "&limit=15")
+      .then(function (d) {
+        crawlSearchCache = d.items;
+        renderCrawlSources();
+        toast("检索到 " + d.total + " 个播客");
+      }).catch(function (e) { toast(e.message); });
+  });
+  $("cs-search").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") $("btn-cs-search").click();
+  });
+  $("cs-body").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button");
+    if (!b || !b.dataset.cs) return;
+    var id = b.dataset.id, url = b.dataset.url, name = b.dataset.name;
+    if (b.dataset.cs === "toggle") {
+      var willEnable = b.textContent.trim() === "启用";
+      api("PATCH", "/admin/crawl/sources/" + id, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: willEnable })
+      }).then(loadCrawlSources).catch(function (e) { toast(e.message); });
+    } else if (b.dataset.cs === "run") {
+      runCrawl([id]);
+    } else if (b.dataset.cs === "del") {
+      if (!confirm("删除该订阅源？（已产生的待审批记录保留）")) return;
+      api("DELETE", "/admin/crawl/sources/" + id)
+        .then(loadCrawlSources).catch(function (e) { toast(e.message); });
+    } else if (b.dataset.cs === "addsearch") {
+      api("POST", "/admin/crawl/sources", {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, url: url })
+      }).then(function (s) {
+        toast("已加入订阅源，立即抓取…");
+        crawlSearchCache = [];
+        return loadCrawlSources().then(function () { runCrawl([s.id]); });
+      }).catch(function (e) { toast(e.message); });
+    } else if (b.dataset.cs === "fetchone") {
+      b.disabled = true; b.textContent = "采集中…";
+      api("POST", "/admin/crawl/fetch", {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url })
+      }).then(function (d) {
+        toast(d.created ? "已进入待审批列表" : "内容未变化（已在列表中）");
+        loadCandidates();
+      }).catch(function (e) { toast(e.message); b.disabled = false; });
+    }
+  });
+
+  // ---- 待审批候选 ----
+  var CAND_TAG = { pending: "待审批", approved: "已通过", rejected: "已驳回" };
+  function fmtDuration(ms) {
+    if (!ms) return "—";
+    var s = Math.round(ms / 1000);
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    s = s % 60;
+    return (h ? h + ":" : "") + (h ? String(m).padStart(2, "0") : m)
+      + ":" + String(s).padStart(2, "0");
+  }
+  function candidateRow(c) {
+    var img = c.artworkUrl
+      ? '<img src="' + esc(c.artworkUrl) + '" style="width:44px;height:44px;border-radius:6px;vertical-align:middle;margin-right:8px" alt="">'
+      : "";
+    var actions;
+    if (c.status === "pending") {
+      actions = '<select data-cand="level" data-id="' + c.id + '" class="inline">'
+        + '<option value="beginner">初级</option>'
+        + '<option value="intermediate">中级</option>'
+        + '<option value="advanced">高级</option></select> '
+        + '<label class="hint"><input type="checkbox" data-cand="publish" data-id="'
+        + c.id + '" checked> 直接上架</label> '
+        + '<button class="act small primary" data-cand="approve" data-id="'
+        + c.id + '">批准并导入</button> '
+        + '<button class="act small danger" data-cand="reject" data-id="'
+        + c.id + '">驳回</button>';
+    } else if (c.status === "approved") {
+      actions = '<span class="hint">已导入：' + esc((c.importedPodcastId || "").slice(0, 8))
+        + '…（可在“内容发布”管理）</span>';
+    } else {
+      actions = '<span class="hint">已驳回</span>';
+    }
+    return "<tr><td>" + img + "<strong>" + esc(c.title || "(无标题)")
+      + "</strong><div class=\"hint\">" + esc(c.author || "") + "</div>"
+      + '<div class="hint" style="max-width:420px">' + esc((c.description || "").slice(0, 120))
+      + '</div></td><td>' + esc(c.language) + '</td><td>'
+      + '<a href="#" data-cand="eps" data-id="' + c.id + '">' + c.episodeCount
+      + " 集 ▸</a></td><td>" + esc(c.discoveredAt || "")
+      + '<div><span class="tag ' + (c.status === "pending" ? "" : "off") + '">'
+      + (CAND_TAG[c.status] || c.status) + "</span></div></td><td>" + actions
+      + "</td></tr>"
+      + '<tr hidden id="cand-eps-' + c.id + '"><td colspan="5" style="background:#f9fafb">'
+      + '<table style="margin:6px 0"><thead><tr><th>单集标题</th><th>发布日</th>'
+      + '<th>时长</th></tr></thead><tbody>'
+      + c.episodes.map(function (e) {
+          return "<tr><td>" + esc(e.title) + "</td><td>" + esc(e.pubDate || "—")
+            + "</td><td>" + fmtDuration(e.durationMs) + "</td></tr>";
+        }).join("")
+      + "</tbody></table></td></tr>";
+  }
+  function loadCandidates() {
+    var st = $("cand-filter").value;
+    return api("GET", "/admin/crawl/candidates?status=" + encodeURIComponent(st))
+      .then(function (d) {
+        $("cand-body").innerHTML = d.items.length
+          ? d.items.map(candidateRow).join("")
+          : '<tr><td colspan="5" style="text-align:center;color:#9ca3af">'
+            + "暂无" + esc(CAND_TAG[st] || st) + "内容</td></tr>";
+      }).catch(function (e) { toast(e.message); });
+  }
+  $("btn-cand-refresh").addEventListener("click", loadCandidates);
+  $("cand-filter").addEventListener("change", loadCandidates);
+  $("cand-body").addEventListener("click", function (ev) {
+    var epsLink = ev.target.closest('a[data-cand="eps"]');
+    if (epsLink) {
+      ev.preventDefault();
+      var panel = $("cand-eps-" + epsLink.dataset.id);
+      if (panel) panel.hidden = !panel.hidden;
+      return;
+    }
+    var b = ev.target.closest("button");
+    if (!b || !b.dataset.cand) return;
+    var id = b.dataset.id;
+    if (b.dataset.cand === "approve") {
+      var levelSel = document.querySelector(
+        'select[data-cand="level"][data-id="' + id + '"]');
+      var pubBox = document.querySelector(
+        'input[data-cand="publish"][data-id="' + id + '"]');
+      var level = levelSel ? levelSel.value : "beginner";
+      var publish = pubBox ? pubBox.checked : true;
+      if (!confirm("批准导入该播客（" + level + (publish ? "，直接上架" : "，暂不上架")
+                   + "）？")) return;
+      api("POST", "/admin/crawl/candidates/" + id + "/approve", {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level: level, publish: publish })
+      }).then(function (r) {
+        toast("已导入「" + r.podcast.title + "」，新增 " + r.inserted_episodes + " 集");
+        loadCandidates();
+      }).catch(function (e) { toast(e.message); });
+    } else if (b.dataset.cand === "reject") {
+      if (!confirm("驳回该条采集内容？")) return;
+      api("POST", "/admin/crawl/candidates/" + id + "/reject")
+        .then(loadCandidates).catch(function (e) { toast(e.message); });
+    }
+  });
+
+  // ---- 启动：本地回环自动带入开发令牌；校验通过后才加载数据 ----
+  function bootstrap() {
+    var host = location.hostname;
+    var loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+    var t = localStorage.getItem("mll_admin_token") || "";
+    if (!t && loopback) {
+      // 本地双击启动场景：服务端默认开发令牌，免手动输入。
+      t = "dev-admin-token";
+      localStorage.setItem("mll_admin_token", t);
+    }
+    tokenEl.value = t;
+    if (!t) {
+      stateEl.textContent = "未设置 Token：请输入 X-Admin-Token 后保存";
+      $("users-body").innerHTML =
+        '<tr><td colspan="8" style="text-align:center;color:#9ca3af">'
+        + "请先在页面顶部输入管理 Token 并保存，再加载数据</td></tr>";
+      return;
+    }
+    saveToken(function (ok) {
+      if (ok) { loadUsers(); }
+      else {
+        $("users-body").innerHTML =
+          '<tr><td colspan="8" style="text-align:center;color:#f87171">'
+          + "管理令牌无效：请在顶部重新输入 Token 后保存</td></tr>";
+      }
+    });
+  }
+  bootstrap();
 })();
 </script>
 </body>
