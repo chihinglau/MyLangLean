@@ -65,7 +65,9 @@ class PlayerPage extends ConsumerWidget {
             Expanded(
               child: state.loading
                   ? const Center(child: CircularProgressIndicator())
-                  : _SubtitleUnavailable(error: state.transcriptError),
+                  : state.transcriptLoading
+                      ? const _TranscriptLoading()
+                      : _SubtitleUnavailable(error: state.transcriptError),
             ),
           _ProgressBar(
             position: controller.position,
@@ -111,6 +113,31 @@ class _SubtitleUnavailable extends StatelessWidget {
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 13, color: Colors.white38),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TranscriptLoading extends StatelessWidget {
+  const _TranscriptLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            CircularProgressIndicator(),
+            SizedBox(height: 18),
+            Text('正在为你生成逐词字幕…',
+                style: TextStyle(fontSize: 16, color: Colors.white70)),
+            SizedBox(height: 8),
+            Text('可以先听音频，字幕准备好后自动显示',
+                style: TextStyle(fontSize: 13, color: Colors.white38)),
           ],
         ),
       ),
@@ -195,7 +222,7 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _ProgressBar extends StatelessWidget {
+class _ProgressBar extends StatefulWidget {
   const _ProgressBar({
     required this.position,
     required this.total,
@@ -209,28 +236,44 @@ class _ProgressBar extends StatelessWidget {
   final ValueChanged<Duration> onSeek;
 
   @override
+  State<_ProgressBar> createState() => _ProgressBarState();
+}
+
+class _ProgressBarState extends State<_ProgressBar> {
+  /// Non-null while the user is dragging: the slider tracks this local
+  /// value and must NOT issue native seeks for every intermediate frame.
+  double? _dragValue;
+
+  @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<Duration>(
-      valueListenable: position,
+      valueListenable: widget.position,
       builder: (context, pos, _) {
-        final max = total.inMilliseconds.toDouble().clamp(1, 1 << 31);
-        final cur = pos.inMilliseconds.clamp(0, total.inMilliseconds).toDouble();
+        final totalMs = widget.total.inMilliseconds;
+        final max = totalMs.clamp(1, 1 << 31).toDouble();
+        final live = pos.inMilliseconds.clamp(0, totalMs).toDouble();
+        final cur = (_dragValue ?? live).clamp(0, max).toDouble();
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 18),
           child: Row(
             children: [
-              Text(fmt(pos),
+              Text(widget.fmt(Duration(milliseconds: cur.round())),
                   style: const TextStyle(
                       fontSize: 11, color: Colors.white54)),
               Expanded(
                 child: Slider(
-                  value: cur.clamp(0, max.toDouble()),
-                  max: max.toDouble(),
-                  onChanged: (v) =>
-                      onSeek(Duration(milliseconds: v.round())),
+                  value: cur,
+                  max: max,
+                  onChangeStart: (v) => setState(() => _dragValue = v),
+                  onChanged: (v) => setState(() => _dragValue = v),
+                  onChangeEnd: (v) {
+                    setState(() => _dragValue = null);
+                    widget.onSeek(
+                        Duration(milliseconds: v.round()));
+                  },
                 ),
               ),
-              Text(fmt(total),
+              Text(widget.fmt(widget.total),
                   style: const TextStyle(
                       fontSize: 11, color: Colors.white54)),
             ],

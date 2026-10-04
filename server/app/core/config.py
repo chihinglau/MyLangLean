@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     asr_model: str = "large-v3-turbo"
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
+    # 远端音频先下载到临时文件再识别：单次下载空闲超时 / 硬看门狗秒数。
+    asr_download_timeout_sec: float = 120.0
+    asr_download_deadline_sec: float = 120.0
+
+    # 翻译后端："stub"（离线演示）或 "mymemory"（免费真实机器翻译）。
+    translate_backend: str = "stub"
 
     # 内容采集：后台守护线程定时抓取已启用 RSS 源；间隔分钟（默认 6 小时）。
     # MLL_CRAWL_ENABLED=false 可关闭调度（手动“立即刷新”仍可用）。
@@ -48,6 +54,12 @@ class Settings(BaseSettings):
     crawl_interval_minutes: int = 360
     crawl_timeout_sec: float = 25.0
     crawl_max_episodes: int = 100
+
+    # 抓取到内容变化后，自动为每个单集产出“源语言 + 中文”逐词双语字幕，
+    # 随候选快照进入审批；审批发布后字幕与音频一起入库下发。
+    # MLL_CRAWL_SUBTITLES_ENABLED=false 可关闭（候选/单集将不带字幕）。
+    crawl_subtitles_enabled: bool = True
+    crawl_subtitle_target: str = "zh"
 
     @property
     def db_path(self) -> Path:

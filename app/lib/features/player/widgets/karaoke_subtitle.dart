@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/rendering.dart'
+    show ScrollDirection, RenderAbstractViewport;
 
 import '../../../../domain/entities/transcript.dart';
 import '../player_controller.dart';
@@ -37,6 +38,12 @@ class KaraokeSubtitle extends StatefulWidget {
 class _KaraokeSubtitleState extends State<KaraokeSubtitle> {
   final ScrollController _scroll = ScrollController();
   final Map<int, GlobalKey> _keys = {};
+
+  /// Content-space top offset of each laid-out sentence, used to jump the
+  /// lazy [ListView] near an off-screen seek target before the real item is
+  /// built and can be aligned precisely.
+  final Map<int, double> _segTops = {};
+  double _avgSegHeight = 96;
   int _activeSegment = -1;
   bool _noTranslationBannerDismissed = false;
   DateTime _lastUserScroll = DateTime.fromMillisecondsSinceEpoch(0);
@@ -87,7 +94,87 @@ class _KaraokeSubtitleState extends State<KaraokeSubtitle> {
         curve: Curves.easeOut,
         alignment: 0.35,
       );
+      return;
     }
+    // The target sentence is outside the built window of the lazy list, so
+    // ensureVisible has no element to act on. Jump near the estimated
+    // position first; once the real item builds, align it precisely.
+    final pos = _scroll.position;
+    final targetOffset = (_estimateTop(idx) - 0.35 * pos.viewportDimension)
+        .clamp(0.0, pos.maxScrollExtent);
+    pos.jumpTo(targetOffset);
+    _alignAfterJump(idx, 2);
+  }
+
+  void _alignAfterJump(int idx, int triesLeft) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final ctx = _keys[idx]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+          alignment: 0.35,
+        );
+      } else if (triesLeft > 0) {
+        _alignAfterJump(idx, triesLeft - 1);
+      }
+    });
+  }
+
+  double _estimateTop(int idx) {
+    const topPadding = 28.0;
+    int? bi;
+    double? before;
+    for (var k = idx - 1; k >= 0; k--) {
+      final t = _segTops[k];
+      if (t != null) {
+        bi = k;
+        before = t;
+        break;
+      }
+    }
+    int? ai;
+    double? after;
+    for (var k = idx; k < widget.transcript.segments.length; k++) {
+      final t = _segTops[k];
+      if (t != null) {
+        ai = k;
+        after = t;
+        break;
+      }
+    }
+    if (before != null && after != null && ai! > bi!) {
+      return before +
+          (after - before) * (idx - bi) / (ai - bi);
+    }
+    if (before != null) return before + (idx - bi!) * _avgSegHeight;
+    if (after != null) return after - (ai! - idx) * _avgSegHeight;
+    return topPadding + idx * _avgSegHeight;
+  }
+
+  /// Remember the content-space top of a built sentence and refresh the
+  /// average item height (sentence heights change with font scale and the
+  /// bilingual translation, so re-measure every built item each frame).
+  void _measureItem(int i, GlobalKey key) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ro = key.currentContext?.findRenderObject();
+      if (ro is! RenderBox || !ro.attached) return;
+      final revealed = RenderAbstractViewport.of(ro).getOffsetToReveal(ro, 0);
+      _segTops[i] = revealed.offset;
+      final ids = _segTops.keys.toList()..sort();
+      var sum = 0.0;
+      var n = 0;
+      for (var k = 1; k < ids.length; k++) {
+        if (ids[k] - ids[k - 1] == 1) {
+          sum += _segTops[ids[k]]! - _segTops[ids[k - 1]]!;
+          n++;
+        }
+      }
+      if (n > 0) _avgSegHeight = sum / n;
+    });
   }
 
   @override
@@ -140,6 +227,7 @@ class _KaraokeSubtitleState extends State<KaraokeSubtitle> {
                 itemBuilder: (context, i) {
                   final seg = segments[i];
                   final key = _keys.putIfAbsent(i, GlobalKey.new);
+                  _measureItem(i, key);
                   final isActive = i == _activeSegment;
                   return Container(
                     key: key,

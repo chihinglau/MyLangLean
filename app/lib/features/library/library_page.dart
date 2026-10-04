@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -114,8 +115,9 @@ class LibraryPage extends ConsumerWidget {
             );
     ref.read(libraryRefreshProvider.notifier).state++;
     if (!context.mounted) return;
-    await ref.read(playerControllerProvider.notifier).playEpisode(episode);
-    if (context.mounted) context.push('/player');
+    unawaited(
+        ref.read(playerControllerProvider.notifier).playEpisode(episode));
+    context.push('/player');
   }
 }
 
@@ -216,11 +218,11 @@ class _EpisodeList extends ConsumerWidget {
               const PopupMenuItem(value: 'delete', child: Text('删除')),
             ],
           ),
-          onTap: () async {
-            await ref
+          onTap: () {
+            unawaited(ref
                 .read(playerControllerProvider.notifier)
-                .playEpisode(ep);
-            if (context.mounted) context.push('/player');
+                .playEpisode(ep));
+            context.push('/player');
           },
         );
       },

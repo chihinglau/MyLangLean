@@ -5,7 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../data/providers.dart';
+import '../../domain/entities/episode.dart';
 import '../../domain/entities/podcast.dart';
+import '../../pal/audio_download_service.dart';
+import '../downloads/downloads_controller.dart';
 import '../player/player_controller.dart';
 
 /// Episode length label: short clips round up to "不足 1 分钟" instead of
@@ -508,34 +511,170 @@ class _EpisodeSheet extends ConsumerWidget {
                     style: const TextStyle(color: Colors.white54)),
               ),
             ),
-            data: (episodes) => episodes.isEmpty
-                ? const Center(
+            data: (episodes) {
+              if (episodes.isEmpty) {
+                return const Center(
                     child: Text('这个播客暂时没有可播放的单集',
-                        style: TextStyle(color: Colors.white38)))
-                : ListView.builder(
-                    controller: controller,
-                    itemCount: episodes.length,
-                    itemBuilder: (context, i) {
-                      final ep = episodes[i];
-                      return ListTile(
-                        leading: const Icon(Icons.play_circle_outline),
-                        title: Text(ep.title),
-                        subtitle: Text(
-                            '${ep.pubDate?.toString().split(' ').first ?? ''} · '
-                            '${_formatDuration(ep.duration)}'),
-                        onTap: () async {
-                          Navigator.pop(context);
-                          await ref
-                              .read(playerControllerProvider.notifier)
-                              .playEpisode(ep);
-                          if (context.mounted) context.push('/player');
-                        },
-                      );
-                    },
-                  ),
+                        style: TextStyle(color: Colors.white38)));
+              }
+              unawaited(ref
+                  .read(downloadsControllerProvider.notifier)
+                  .loadFor(episodes));
+              return ListView.builder(
+                controller: controller,
+                itemCount: episodes.length,
+                itemBuilder: (context, i) =>
+                    _EpisodeRow(episode: episodes[i]),
+              );
+            },
           ),
         ),
       ],
     );
+  }
+}
+
+/// One episode row in the sheet: tap plays it; the trailing control shows
+/// download availability/progress and lets the user remove a cached episode.
+class _EpisodeRow extends ConsumerWidget {
+  const _EpisodeRow({required this.episode});
+
+  final Episode episode;
+
+  String _downloadLabel(EpisodeDownload? d) {
+    switch (d?.state) {
+      case EpisodeDownloadState.downloaded:
+        return '已下载';
+      case EpisodeDownloadState.failed:
+        return '下载失败，可重试';
+      case EpisodeDownloadState.downloading:
+        final f = d?.fraction;
+        return f != null ? '下载中 ${(f * 100).round()}%' : '下载中…';
+      default:
+        return '可下载';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final downloads = ref.watch(downloadsControllerProvider);
+    final downloadsCtrl = ref.read(downloadsControllerProvider.notifier);
+    final dl = episode.isLocal ? null : downloads[episode.audioUrl];
+
+    return InkWell(
+      onTap: () {
+        // Capture the app-level router BEFORE closing the sheet: this
+        // context is defunct right after pop, and audio loading (esp.
+        // remote episodes) must not block entering the player page.
+        final router = GoRouter.of(context);
+        Navigator.pop(context);
+        unawaited(ref
+            .read(playerControllerProvider.notifier)
+            .playEpisode(episode));
+        router.push('/player');
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            const Icon(Icons.play_circle_outline, size: 32),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(episode.title,
+                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${episode.pubDate?.toString().split(' ').first ?? ''} · '
+                    '${_formatDuration(episode.duration)} · '
+                    '${episode.isLocal ? '本地' : _downloadLabel(dl)}',
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.white54),
+                  ),
+                ],
+              ),
+            ),
+            if (downloadsCtrl.supported && !episode.isLocal)
+              _DownloadControl(episode: episode, download: dl),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Trailing download affordance: download / progress / downloaded+delete.
+class _DownloadControl extends ConsumerWidget {
+  const _DownloadControl({
+    required this.episode,
+    required this.download,
+  });
+
+  final Episode episode;
+  final EpisodeDownload? download;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = download?.state ?? EpisodeDownloadState.none;
+    final downloadsCtrl = ref.read(downloadsControllerProvider.notifier);
+
+    switch (state) {
+      case EpisodeDownloadState.downloaded:
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.download_done,
+                color: Colors.lightGreenAccent, size: 22),
+            IconButton(
+              tooltip: '删除下载',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () async {
+                await downloadsCtrl.delete(episode.audioUrl);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('已删除下载'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        );
+      case EpisodeDownloadState.downloading:
+        final fraction = download?.fraction;
+        return SizedBox(
+          width: 48,
+          height: 48,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  value: fraction,
+                  strokeWidth: 3,
+                ),
+              ),
+              if (fraction != null)
+                Text('${(fraction * 100).round()}',
+                    style: const TextStyle(fontSize: 9)),
+            ],
+          ),
+        );
+      case EpisodeDownloadState.failed:
+      case EpisodeDownloadState.none:
+        final failed = state == EpisodeDownloadState.failed;
+        return IconButton(
+          tooltip: failed ? '重试下载' : '下载',
+          color: failed ? Colors.orangeAccent : null,
+          icon: Icon(failed ? Icons.error_outline : Icons.download),
+          onPressed: () => downloadsCtrl.start(episode.audioUrl),
+        );
+    }
   }
 }

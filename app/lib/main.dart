@@ -14,6 +14,7 @@ import 'data/remote/ml_api.dart';
 import 'data/repositories/fallback_catalog_repository.dart';
 import 'data/repositories/persistent_library_repository.dart';
 import 'data/repositories/persistent_practice_repository.dart';
+import 'data/repositories/remote_transcript_repository.dart';
 import 'data/repositories/synced_auth_repository.dart';
 import 'data/repositories/synced_library_repository.dart';
 import 'pal/pal_providers.dart';
@@ -42,6 +43,8 @@ Future<void> main() async {
     audioRecorderServiceProvider
         .overrideWithValue(createPlatformAudioRecorder()),
     mediaPickerServiceProvider.overrideWithValue(picker),
+    audioDownloadServiceProvider
+        .overrideWithValue(createPlatformAudioDownloads()),
   ];
 
   // JSON persistence lives in the app-private files directory. When the
@@ -76,6 +79,8 @@ Future<void> main() async {
       ..add(practiceRepositoryProvider
           .overrideWithValue(PersistentPracticeRepository(practiceStore)))
       ..add(authRepositoryProvider.overrideWithValue(authRepo))
+      ..add(transcriptRepositoryProvider.overrideWithValue(
+          RemoteTranscriptRepository(api, kv: kv)))
       ..add(preferencesProvider
           .overrideWith((ref) => PreferencesNotifier(kv)))
       ..add(recentSearchesProvider

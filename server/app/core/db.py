@@ -188,6 +188,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     duration_ms INTEGER NOT NULL DEFAULT 0,
     pub_date    TEXT NOT NULL DEFAULT '',
     language    TEXT NOT NULL DEFAULT 'en',
+    -- 随发布同步下发的逐词双语字幕 JSON（TranscriptOut 冻结帧格式）；
+    -- 空串表示该单集暂无已发布字幕。
+    transcript_json TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -302,6 +305,17 @@ def _seed_catalog(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """对旧库做增量加列（CREATE TABLE IF NOT EXISTS 不会补列）。幂等。"""
+    ep_cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(episodes)")
+    }
+    if "transcript_json" not in ep_cols:
+        conn.execute(
+            "ALTER TABLE episodes ADD COLUMN transcript_json"
+            " TEXT NOT NULL DEFAULT ''")
+
+
 def init_db() -> None:
     """建表 + 准备目录 + 首次播种。重复调用安全。"""
     settings = get_settings()
@@ -312,6 +326,7 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         _seed_catalog(conn)
         conn.commit()
     finally:
@@ -348,6 +363,19 @@ def podcast_out(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _row_transcript(row: sqlite3.Row) -> Any:
+    """解析单集行内嵌的已发布字幕；旧连接缺列 / 坏 JSON 一律回退 None。"""
+    if "transcript_json" not in row.keys():
+        return None
+    raw = row["transcript_json"]
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def episode_out(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -357,6 +385,8 @@ def episode_out(row: sqlite3.Row) -> dict[str, Any]:
         "durationMs": row["duration_ms"],
         "pubDate": row["pub_date"],
         "language": row["language"],
+        # 随单集同步发布的逐词双语字幕；null 表示暂无（App 可走按需 ASR）。
+        "transcript": _row_transcript(row),
     }
 
 
@@ -1333,6 +1363,17 @@ def _safe_lang(code: Any) -> str:
     return "en"
 
 
+def _ep_transcript_json(ep: dict[str, Any]) -> str:
+    """候选单集快照内嵌 transcript 对象 -> 可落库的 JSON 串。"""
+    t = ep.get("transcript")
+    if not isinstance(t, dict):
+        return ""
+    try:
+        return json.dumps(t, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+
+
 def import_candidate(candidate_id: str, *, publish: bool = True,
                      level: str = "beginner") -> dict[str, Any]:
     """审批通过：导入为正式播客 + 单集（同 feed 二次导入只补新增单集）。
@@ -1385,18 +1426,33 @@ def import_candidate(candidate_id: str, *, publish: bool = True,
                 "SELECT audio_url FROM episodes WHERE podcast_id=?", (pid,))
         }
         inserted = 0
+        backfilled = 0
         for ep in episodes:
             audio_url = str(ep.get("audioUrl") or "").strip()
-            if not audio_url or audio_url in existing:
+            if not audio_url:
+                continue
+            transcript_json = _ep_transcript_json(ep)
+            if audio_url in existing:
+                # 已在库的旧单集：仅在其尚无字幕时补填候选里带来的字幕，
+                # 不覆盖后续可能已人工维护过的字幕。
+                if transcript_json:
+                    cur = conn.execute(
+                        "UPDATE episodes SET transcript_json=?,"
+                        " updated_at=? WHERE podcast_id=? AND audio_url=?"
+                        " AND transcript_json=''",
+                        (transcript_json, ts, pid, audio_url))
+                    backfilled += cur.rowcount
                 continue
             conn.execute(
                 "INSERT INTO episodes (id, podcast_id, title, audio_url,"
-                " duration_ms, pub_date, language, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
+                " duration_ms, pub_date, language, transcript_json,"
+                " created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (uuid.uuid4().hex, pid, str(ep.get("title") or "未命名单集"),
                  audio_url, int(ep.get("durationMs") or 0),
                  str(ep.get("pubDate") or "")[:10],
-                 _safe_lang(ep.get("language") or cand["language"]), ts, ts),
+                 _safe_lang(ep.get("language") or cand["language"]),
+                 transcript_json, ts, ts),
             )
             existing.add(audio_url)
             inserted += 1
@@ -1421,6 +1477,7 @@ def import_candidate(candidate_id: str, *, publish: bool = True,
             "podcast": podcast_out(pod_row),
             "episodes": [episode_out(r) for r in ep_rows],
             "inserted_episodes": inserted,
+            "backfilled_transcripts": backfilled,
         }
     finally:
         conn.close()

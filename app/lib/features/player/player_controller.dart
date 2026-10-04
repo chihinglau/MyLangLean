@@ -35,6 +35,7 @@ class PlayerState {
     this.mode = SubtitleMode.bilingual,
     this.fontScale = 1.0,
     this.loading = false,
+    this.transcriptLoading = false,
   });
 
   final Episode? episode;
@@ -53,6 +54,9 @@ class PlayerState {
   final double fontScale;
   final bool loading;
 
+  /// True while an on-demand transcript is being generated in background.
+  final bool transcriptLoading;
+
   bool get hasMedia => episode != null;
 
   PlayerState copyWith({
@@ -66,6 +70,7 @@ class PlayerState {
     SubtitleMode? mode,
     double? fontScale,
     bool? loading,
+    bool? transcriptLoading,
   }) {
     return PlayerState(
       episode: episode ?? this.episode,
@@ -78,6 +83,7 @@ class PlayerState {
       mode: mode ?? this.mode,
       fontScale: fontScale ?? this.fontScale,
       loading: loading ?? this.loading,
+      transcriptLoading: transcriptLoading ?? this.transcriptLoading,
     );
   }
 }
@@ -166,9 +172,10 @@ class PlayerController extends Notifier<PlayerState> {
     await playEpisode(episode);
   }
 
-  /// Loads [episode] and its transcript (optional), then starts playback.
-  /// Missing subtitles never block audio; broken ones surface as
-  /// [PlayerState.transcriptError].
+  /// Loads and starts [episode]'s audio immediately, then resolves its
+  /// transcript in the background (on-demand ASR can take a while and must
+  /// never block playback). Missing subtitles never block audio; broken
+  /// ones surface as [PlayerState.transcriptError].
   Future<void> playEpisode(Episode episode) async {
     final token = ++_playToken;
     state = PlayerState(
@@ -180,16 +187,6 @@ class PlayerController extends Notifier<PlayerState> {
     );
     position.value = Duration.zero;
 
-    Transcript? transcript;
-    String? transcriptError;
-    try {
-      transcript =
-          await ref.read(transcriptRepositoryProvider).transcriptFor(episode);
-    } catch (e) {
-      transcriptError = e is TranscriptException ? e.message : '字幕加载失败';
-    }
-    if (token != _playToken) return;
-
     String? mediaError;
     try {
       await _audio.load(episode.playableSource, isLocal: episode.isLocal);
@@ -198,21 +195,39 @@ class PlayerController extends Notifier<PlayerState> {
       mediaError = '音频无法加载：文件可能已被删除或移动';
     }
     if (token != _playToken) return;
-    state = state.copyWith(
-      transcript: transcript,
-      transcriptError: transcriptError,
-      mediaError: mediaError,
-      loading: false,
-    );
-    if (mediaError == null) {
-      await _audio.play();
+    state = state.copyWith(mediaError: mediaError, loading: false);
+    if (mediaError != null) return;
+    await _audio.play();
+    unawaited(_resolveTranscript(episode, token));
+  }
+
+  Future<void> _resolveTranscript(Episode episode, int token) async {
+    state = state.copyWith(transcriptLoading: true);
+    try {
+      final t =
+          await ref.read(transcriptRepositoryProvider).transcriptFor(episode);
+      if (token != _playToken) return;
+      state = state.copyWith(transcript: t, transcriptLoading: false);
+    } catch (e) {
+      if (token != _playToken) return;
+      state = state.copyWith(
+        transcriptLoading: false,
+        transcriptError:
+            e is TranscriptException ? e.message : '字幕加载失败',
+      );
     }
   }
 
-  /// Duration used for progress display/seeking: subtitles win, the media
-  /// metadata is the fallback when there is no transcript.
-  Duration get mediaDuration =>
-      state.transcript?.totalDuration ?? _audio.duration;
+  /// Duration used for progress display/seeking. Normally the transcript
+  /// and the media metadata agree; when they don't (partial/stub
+  /// transcript), take the longer one so the progress bar never clips
+  /// audio that is actually longer.
+  Duration get mediaDuration {
+    final transcriptLen =
+        state.transcript?.totalDuration ?? Duration.zero;
+    final mediaLen = _audio.duration;
+    return transcriptLen > mediaLen ? transcriptLen : mediaLen;
+  }
 
   Future<void> togglePlay() async {
     if (!state.hasMedia) return;
@@ -223,17 +238,19 @@ class PlayerController extends Notifier<PlayerState> {
     }
   }
 
-  Future<void> seek(Duration p) => _audio.seekTo(p);
+  Future<void> seek(Duration p) async {
+    final clamped = Duration(
+        milliseconds:
+            p.inMilliseconds.clamp(0, mediaDuration.inMilliseconds));
+    // Optimistic UI: move the play head (and karaoke highlight) immediately
+    // instead of waiting for the async native seek + first position tick
+    // (which can lag seconds when the target is outside the cached prefix).
+    position.value = clamped;
+    await _audio.seekTo(clamped);
+  }
 
   Future<void> seekBy(Duration delta) async {
-    final target = position.value + delta;
-    await _audio.seekTo(
-      Duration(milliseconds: target.inMilliseconds.clamp(
-        0,
-        (state.transcript?.totalDuration.inMilliseconds ??
-            _audio.duration.inMilliseconds),
-      )),
-    );
+    await seek(position.value + delta);
   }
 
   Future<void> setRate(double rate) async {

@@ -6,7 +6,9 @@ import 'package:mylanglean/data/kv_store.dart';
 import 'package:mylanglean/data/local_library_store.dart';
 import 'package:mylanglean/data/remote/ml_api.dart';
 import 'package:mylanglean/data/repositories/fallback_catalog_repository.dart';
+import 'package:mylanglean/data/repositories/mock_repositories.dart';
 import 'package:mylanglean/data/repositories/persistent_library_repository.dart';
+import 'package:mylanglean/data/repositories/remote_transcript_repository.dart';
 import 'package:mylanglean/data/repositories/synced_auth_repository.dart';
 import 'package:mylanglean/data/repositories/synced_library_repository.dart';
 import 'package:mylanglean/domain/entities/episode.dart';
@@ -126,6 +128,75 @@ Future<KvStore> tempKv() async {
   addTearDown(() => dir.delete(recursive: true).catchError((_) => dir));
   return KvStore.open(dir);
 }
+
+/// Scripts the transcription job lifecycle without any real HTTP.
+class _FakeTranscriptApi extends FakeApi {
+  _FakeTranscriptApi({
+    this.terminalStatus = 'done',
+    this.errorText,
+    this.transcriptJson,
+    this.processingPolls = 1,
+  });
+
+  String terminalStatus;
+  String? errorText;
+  Map<String, dynamic>? transcriptJson;
+  int processingPolls;
+  int createCalls = 0;
+  int pollCalls = 0;
+  String? lastClientKey;
+
+  @override
+  Future<RemoteTranscriptionJob> createTranscription({
+    required String audioUrl,
+    String language = 'en',
+    String? targetLang,
+    String? clientKey,
+  }) async {
+    createCalls++;
+    lastClientKey = clientKey;
+    return const RemoteTranscriptionJob(id: 'job-9', status: 'queued');
+  }
+
+  @override
+  Future<RemoteTranscriptionJob> transcriptionJob(String jobId) async {
+    pollCalls++;
+    if (pollCalls <= processingPolls) {
+      return RemoteTranscriptionJob(id: jobId, status: 'processing');
+    }
+    return RemoteTranscriptionJob(
+      id: jobId,
+      status: terminalStatus,
+      error: errorText,
+      transcript: transcriptJson,
+    );
+  }
+}
+
+const _transcriptJson = {
+  'version': 1,
+  'language': 'de',
+  'duration': 2.4,
+  'segments': [
+    {
+      'id': 0,
+      'start': 0.1,
+      'end': 2.2,
+      'text': 'Hello there.',
+      'words': [
+        {'w': 'Hello', 's': 0.1, 'e': 1.0, 'p': 0.9},
+        {'w': 'there.', 's': 1.1, 'e': 2.2, 'p': 0.9},
+      ],
+    },
+  ],
+};
+
+const _onlineEpisode = Episode(
+  id: 'ep-1',
+  title: 'Episode 1',
+  audioUrl: 'https://cdn/x.mp3',
+  language: 'de',
+);
 
 void main() {
   group('SyncedAuthRepository', () {
@@ -478,6 +549,93 @@ void main() {
           SyncedLibraryRepository(PersistentLibraryRepository(store, kv),
               api, kv);
       expect(await repo.syncSubscriptions(), isFalse);
+    });
+  });
+
+  group('RemoteTranscriptRepository', () {
+    RemoteTranscriptRepository build(_FakeTranscriptApi api, KvStore kv) =>
+        RemoteTranscriptRepository(api,
+            kv: kv, pollInterval: Duration.zero);
+
+    test('catalog episode submits ASR, polls, and returns transcript',
+        () async {
+      final kv = await tempKv();
+      final api =
+          _FakeTranscriptApi(transcriptJson: _transcriptJson);
+      final t = await build(api, kv).transcriptFor(_onlineEpisode);
+
+      expect(t, isNotNull);
+      expect(t!.segments, hasLength(1));
+      expect(t.segments.first.text, 'Hello there.');
+      expect(api.createCalls, 1);
+      expect(api.lastClientKey, 'ep-ep-1');
+      expect(api.pollCalls, greaterThanOrEqualTo(2));
+    });
+
+    test('second call is served from cache (no new transcription)',
+        () async {
+      final kv = await tempKv();
+      final api = _FakeTranscriptApi(transcriptJson: _transcriptJson);
+      final repo = build(api, kv);
+      await repo.transcriptFor(_onlineEpisode);
+      final again = await repo.transcriptFor(_onlineEpisode);
+
+      expect(again!.segments.first.text, 'Hello there.');
+      expect(api.createCalls, 1);
+    });
+
+    test('KV cache survives a fresh repository instance', () async {
+      final kv = await tempKv();
+      final api1 = _FakeTranscriptApi(transcriptJson: _transcriptJson);
+      await build(api1, kv).transcriptFor(_onlineEpisode);
+
+      final api2 = _FakeTranscriptApi(transcriptJson: _transcriptJson);
+      final t = await build(api2, kv).transcriptFor(_onlineEpisode);
+
+      expect(t!.language, 'de');
+      expect(api2.createCalls, 0);
+    });
+
+    test('quota error surfaces a Chinese TranscriptException', () async {
+      final kv = await tempKv();
+      final api = _FakeTranscriptApi(
+        terminalStatus: 'error',
+        errorText: 'monthly quota exhausted: 100 min',
+      );
+      try {
+        await build(api, kv).transcriptFor(_onlineEpisode);
+        fail('expected TranscriptException');
+      } on TranscriptException catch (e) {
+        expect(e.message, contains('额度'));
+      }
+      expect(api.createCalls, 1);
+    });
+
+    test('local imported episode delegates to the local resolver',
+        () async {
+      final kv = await tempKv();
+      final dir = await Directory.systemTemp.createTemp('mll-sidecar-');
+      addTearDown(
+          () => dir.delete(recursive: true).catchError((_) => dir));
+      final sidecar = File(
+          '${dir.path}${Platform.pathSeparator}tool_sample.json');
+      await sidecar.writeAsString(
+          await File('test/fixtures/tool_sample_transcript.json')
+              .readAsString());
+      final localEpisode = Episode(
+        id: 'loc-1',
+        title: 'Local',
+        audioUrl: sidecar.path,
+        isLocal: true,
+        transcriptPath: sidecar.path,
+      );
+      final api = _FakeTranscriptApi(transcriptJson: _transcriptJson);
+      final t =
+          await RemoteTranscriptRepository(api, kv: kv)
+              .transcriptFor(localEpisode);
+
+      expect(t!.segments.first.text, 'Studio export works.');
+      expect(api.createCalls, 0);
     });
   });
 }

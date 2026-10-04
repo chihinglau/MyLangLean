@@ -7,6 +7,7 @@ import io.flutter.embedding.engine.FlutterEngine
 class MainActivity : FlutterActivity() {
 
     private var playerPlugin: MlAudioPlayerPlugin? = null
+    private var downloadsPlugin: MlAudioDownloadsPlugin? = null
     private var recorderPlugin: MlAudioRecorderPlugin? = null
     private var pickerPlugin: MlMediaPickerPlugin? = null
     private var updaterPlugin: MlUpdaterPlugin? = null
@@ -16,6 +17,7 @@ class MainActivity : FlutterActivity() {
         val messenger = flutterEngine.dartExecutor.binaryMessenger
 
         playerPlugin = MlAudioPlayerPlugin(applicationContext, messenger)
+        downloadsPlugin = MlAudioDownloadsPlugin(applicationContext, messenger)
         recorderPlugin = MlAudioRecorderPlugin(this, messenger)
         pickerPlugin = MlMediaPickerPlugin(this, messenger)
         updaterPlugin = MlUpdaterPlugin(this, messenger)

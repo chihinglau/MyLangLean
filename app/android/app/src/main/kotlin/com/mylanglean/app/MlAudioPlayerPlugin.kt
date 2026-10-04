@@ -6,6 +6,7 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -39,6 +40,13 @@ class MlAudioPlayerPlugin(
     private var pendingRate = 1.0f
     private var pendingSeek = -1
 
+    // Last user-seek bookkeeping. MediaPlayer.seekTo is async; while it is
+    // pending (esp. seeking past the cached prefix through the proxy) the
+    // ticker must not overwrite the optimistic target with a stale
+    // currentPosition, or subtitles jump back to the old sentence.
+    private var seekTargetMs = -1
+    private var seekIssuedAt = 0L
+
     private val ticker = object : Runnable {
         override fun run() {
             val mp = player
@@ -52,7 +60,8 @@ class MlAudioPlayerPlugin(
                         // Always emit (including right after a loop jump): the
                         // next currentPosition already reflects the new head.
                         val posNow = mp.currentPosition
-                        channel.invokeMethod("onPosition", posNow)
+                        channel.invokeMethod(
+                            "onPosition", seekAwarePosition(posNow))
                     }
                 } catch (_: IllegalStateException) {
                     // Player released mid-tick; just reschedule.
@@ -89,6 +98,7 @@ class MlAudioPlayerPlugin(
                 "seek" -> {
                     val ms = call.argument<Int>("ms") ?: 0
                     if (prepared) {
+                        markSeekTarget(ms)
                         player?.seekTo(ms)
                         channel.invokeMethod("onPosition", ms)
                     } else {
@@ -148,13 +158,27 @@ class MlAudioPlayerPlugin(
             assetFd = afd
             mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
         } else {
-            mp.setDataSource(source)
+            // Route remote audio through the local stream-and-cache proxy so
+            // repeat playback reads from disk instead of re-downloading.
+            // Skip localhost (e.g. a user-configured local server) to avoid
+            // proxying a loopback source.
+            val dataSource = if (
+                (source.startsWith("http://") || source.startsWith("https://")) &&
+                !source.startsWith("http://127.0.0.1") &&
+                !source.startsWith("http://localhost")
+            ) {
+                AudioCacheProxy.get(context).proxyFor(source)
+            } else {
+                source
+            }
+            mp.setDataSource(dataSource)
         }
         mp.setOnPreparedListener { p ->
             prepared = true
             channel.invokeMethod("onDuration", p.duration)
             applyRate()
             if (pendingSeek >= 0) {
+                markSeekTarget(pendingSeek)
                 p.seekTo(pendingSeek)
                 channel.invokeMethod("onPosition", pendingSeek)
                 pendingSeek = -1
@@ -190,6 +214,27 @@ class MlAudioPlayerPlugin(
         }
     }
 
+    private fun markSeekTarget(ms: Int) {
+        seekTargetMs = ms
+        seekIssuedAt = SystemClock.uptimeMillis()
+    }
+
+    /**
+     * Position to emit on the tick. Until the async seek lands (actual
+     * currentPosition within [SEEK_TOLERANCE_MS] of the target, or
+     * [SEEK_GRACE_MS] elapses) keep reporting the requested target so the
+     * Flutter play head/subtitles stay on the chosen sentence.
+     */
+    private fun seekAwarePosition(currentPos: Int): Int {
+        val target = seekTargetMs
+        if (target < 0) return currentPos
+        val landed = kotlin.math.abs(currentPos - target) <= SEEK_TOLERANCE_MS
+        val expired =
+            SystemClock.uptimeMillis() - seekIssuedAt > SEEK_GRACE_MS
+        if (landed || expired) seekTargetMs = -1
+        return if (landed || expired) currentPos else target
+    }
+
     private fun releasePlayer() {
         player?.let {
             try {
@@ -202,6 +247,7 @@ class MlAudioPlayerPlugin(
         prepared = false
         playWhenPrepared = false
         pendingSeek = -1
+        seekTargetMs = -1
         loopA = -1
         loopB = -1
         assetFd?.let {
@@ -217,5 +263,7 @@ class MlAudioPlayerPlugin(
         private const val CHANNEL = "ml/audio_player"
         private const val ASSET_PREFIX = "asset://"
         private const val TICK_MS = 33
+        private const val SEEK_GRACE_MS = 3_000L
+        private const val SEEK_TOLERANCE_MS = 1_500
     }
 }

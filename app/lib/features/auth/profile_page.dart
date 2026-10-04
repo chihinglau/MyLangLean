@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/constants.dart';
+import '../../core/lan_discovery.dart';
 import '../../data/providers.dart';
 import '../../data/repositories/synced_library_repository.dart';
 import '../../domain/entities/quota.dart';
@@ -297,44 +298,11 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
 
   Future<void> _editServerUrl() async {
     final api = ref.read(mlApiProvider);
-    final ctrl = TextEditingController(text: api.baseUrl);
     final url = await showDialog<String>(
       context: context,
       useRootNavigator: true,
-      builder: (ctx) => AlertDialog(
-        title: const Text('服务器地址'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: ctrl,
-              keyboardType: TextInputType.url,
-              autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: '例如 http://192.168.1.10:8000',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '手机与电脑需在同一网络；USB 调试时可用 http://127.0.0.1:8000 配合 adb reverse。',
-              style: TextStyle(fontSize: 11, color: Colors.white38),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (ctx) => _ServerUrlDialog(initialUrl: api.baseUrl),
     );
-    ctrl.dispose();
     if (url == null || url.isEmpty || url == api.baseUrl) return;
     api.baseUrl = url;
     await ref.read(kvStoreProvider)?.set('api.base_url', url);
@@ -508,6 +476,102 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
     _emailCtrl.clear();
     _pwdCtrl.clear();
     _nameCtrl.clear();
+  }
+}
+
+/// Server URL editor dialog.
+///
+/// Owns its [TextEditingController] and disposes it in [State.dispose],
+/// which runs only after the dialog route is fully removed. Disposing
+/// synchronously after [Navigator.pop] would race the route's exit
+/// animation while the [TextField] is still mounted.
+class _ServerUrlDialog extends StatefulWidget {
+  const _ServerUrlDialog({required this.initialUrl});
+
+  final String initialUrl;
+
+  @override
+  State<_ServerUrlDialog> createState() => _ServerUrlDialogState();
+}
+
+class _ServerUrlDialogState extends State<_ServerUrlDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initialUrl);
+  bool _discovering = false;
+
+  Future<void> _autoDiscover() async {
+    setState(() => _discovering = true);
+    final url = await LanServerDiscovery.discover();
+    if (!mounted) return;
+    setState(() => _discovering = false);
+    if (url != null) {
+      _ctrl.text = url;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已发现服务器：$url')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('未发现局域网服务器，请确认电脑端服务已启动、'
+              '防火墙已放行且手机与电脑在同一网络'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('服务器地址'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _ctrl,
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: '例如 http://192.168.1.10:8000',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _discovering ? null : _autoDiscover,
+            icon: _discovering
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.wifi_find),
+            label: Text(_discovering ? '正在搜索…' : '自动发现局域网服务器'),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '手机与电脑需在同一网络；USB 调试时可用 http://127.0.0.1:8000 配合 adb reverse。',
+            style: TextStyle(fontSize: 11, color: Colors.white38),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
+          child: const Text('保存'),
+        ),
+      ],
+    );
   }
 }
 

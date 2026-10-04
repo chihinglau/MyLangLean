@@ -168,6 +168,69 @@ void main() {
     });
   });
 
+  group('transcriptions', () {
+    test('create posts audio_url/language/client_key and parses 202',
+        () async {
+      final api = apiWith((options) {
+        expect(options.path, endsWith('/transcriptions'));
+        final raw = options.data;
+        final body =
+            (raw is String ? jsonDecode(raw) : raw) as Map;
+        expect(body['audio_url'], 'http://x/a.mp3');
+        expect(body['language'], 'de');
+        expect(body['client_key'], 'ep-1');
+        return (202, {'id': 'job-1', 'status': 'queued'});
+      });
+      final job = await api.createTranscription(
+          audioUrl: 'http://x/a.mp3',
+          language: 'de',
+          clientKey: 'ep-1');
+      expect(job.id, 'job-1');
+      expect(job.status, 'queued');
+      expect(job.isDone, isFalse);
+      expect(job.isError, isFalse);
+    });
+
+    test('transcriptionJob parses a done job with transcript json',
+        () async {
+      final api = apiWith((options) {
+        expect(options.path, endsWith('/transcriptions/job-1'));
+        return (
+          200,
+          {
+            'id': 'job-1',
+            'status': 'done',
+            'billed_sec': 18,
+            'transcript': {
+              'version': 1,
+              'language': 'en',
+              'duration': 17.6,
+              'segments': <dynamic>[],
+            },
+          }
+        );
+      });
+      final job = await api.transcriptionJob('job-1');
+      expect(job.isDone, isTrue);
+      expect(job.billedSec, 18);
+      expect(job.transcript?['language'], 'en');
+    });
+
+    test('transcriptionJob maps an error status', () async {
+      final api = apiWith((_) => (
+            200,
+            {
+              'id': 'job-2',
+              'status': 'error',
+              'error': 'monthly quota exhausted: 100 min',
+            }
+          ));
+      final job = await api.transcriptionJob('job-2');
+      expect(job.isError, isTrue);
+      expect(job.error, contains('quota'));
+    });
+  });
+
   group('ReleaseInfo', () {
     test('parses the snake_case envelope and abs download url', () {
       final info = ReleaseInfo.fromJson({

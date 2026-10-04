@@ -123,6 +123,9 @@ if exist "%ADB%" (
 )
 
 echo.
+rem Open Windows Firewall for Wi-Fi clients + show this PC's LAN IP.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$names=@('MyLangLean Server TCP 8000','MyLangLean Discovery UDP 43800'); $ports=@(8000,43800); $protos=@('TCP','UDP'); for($i=0;$i -lt 2;$i++){ if(-not (Get-NetFirewallRule -DisplayName $names[$i] -ErrorAction SilentlyContinue)){ try { New-NetFirewallRule -DisplayName $names[$i] -Direction Inbound -Action Allow -Protocol $protos[$i] -LocalPort $ports[$i] -ErrorAction Stop | Out-Null; Write-Output ('[OK] Firewall opened for Wi-Fi clients: ' + $names[$i]) } catch { Write-Output '[WARN] Need administrator rights to open the firewall.'; Write-Output '[WARN] Right-click this launcher and choose Run as administrator once,'; Write-Output '[WARN] or click Allow when Windows asks about Python network access.' } } }; $ip=Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress; if($ip){ Write-Output ('[INFO] This PC LAN address: ' + $ip); Write-Output ('[INFO] Phone Wi-Fi server URL: http://' + $ip + ':8000') }"
+
 echo ============================================================
 echo   MyLangLean PC server is starting...
 echo   Health check : %URL%/health

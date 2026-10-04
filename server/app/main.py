@@ -22,6 +22,8 @@ from .api import (
 from .core import db
 from .core.config import SERVER_DIR, get_settings
 from .services import crawler
+from .services.discovery import LanDiscoveryService
+from .services.translate import MyMemoryTranslateProvider, set_translate_provider
 
 STATIC_ADMIN_DIR = SERVER_DIR / "static" / "admin"
 
@@ -30,11 +32,21 @@ STATIC_ADMIN_DIR = SERVER_DIR / "static" / "admin"
 async def lifespan(_app: FastAPI):
     # 定时内容采集守护线程（间隔由 MLL_CRAWL_INTERVAL_MINUTES 控制）。
     crawler.start_scheduler()
-    yield
+    # 局域网自动发现：同 WiFi 的手机可广播 UDP 探测自动找到本服务器。
+    discovery = LanDiscoveryService()
+    discovery.start()
+    try:
+        yield
+    finally:
+        discovery.stop()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
+
+    # 真实机器翻译后端（默认 stub 仅用于离线演示/测试）。
+    if settings.translate_backend == "mymemory":
+        set_translate_provider(MyMemoryTranslateProvider())
 
     # 启动即建表/播种，并确保静态目录存在（StaticFiles 要求目录已存在）。
     db.init_db()

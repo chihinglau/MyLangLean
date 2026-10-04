@@ -28,6 +28,7 @@ import httpx
 
 from ..core import db
 from ..core.config import get_settings
+from . import subtitle_pipeline
 
 USER_AGENT = "MyLangLeanBot/0.4 (+admin content review)"
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
@@ -51,6 +52,24 @@ def validate_url(url: str) -> str:
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise CrawlError("URL 非法：仅支持 http/https 的订阅源地址")
     return text
+
+
+def _unwrap_blubrry(url: str) -> str:
+    """media.blubrry.com/<show>/<origin> 镜像地址解包为源站直链。
+
+    blubrry 镜像在当前网络不可达（连接超时），而其路径后半段就是发布者
+    源站的完整地址（如 nihongoconteppei.com/wp-content/...）。解包后
+    识别引擎与 App 都能直接访问源站。非 blubrry 链接原样返回。
+    """
+    parsed = urlparse(url)
+    if parsed.netloc.lower() != "media.blubrry.com":
+        return url
+    parts = parsed.path.split("/", 3)
+    # ['', '<show>', '<origin-host>/<path>']
+    if len(parts) < 3 or "." not in parts[2]:
+        return url
+    return f"{parsed.scheme}://{parts[2]}" + (
+        f"/{parts[3]}" if len(parts) > 3 else "")
 
 
 def fetch_url(url: str) -> bytes:
@@ -224,6 +243,7 @@ def _parse_rss(root: ET.Element, feed_url: str) -> dict[str, Any]:
                     break
         if not audio_url:
             continue
+        audio_url = _unwrap_blubrry(audio_url)
         guid = (item.findtext("guid") or audio_url).strip()
         episodes.append({
             "guid": guid,
@@ -272,6 +292,7 @@ def _parse_atom(root: ET.Element, feed_url: str) -> dict[str, Any]:
                 audio_url = href
         if not audio_url:
             continue
+        audio_url = _unwrap_blubrry(audio_url)
         guid = (_findtext(entry, [(NS_ATOM, "id")]) or audio_url)
         episodes.append({
             "guid": guid,
@@ -348,6 +369,34 @@ def parse_feed(content: bytes, feed_url: str = "") -> dict[str, Any]:
 # 入库（去重 / 变更检测）
 # ---------------------------------------------------------------------------
 
+def _enrich_with_subtitles(episodes: list[dict[str, Any]],
+                           fallback_language: str
+                           ) -> list[dict[str, Any]]:
+    """为每个单集自动生成“源语言 + 中文”逐词双语字幕，嵌入 transcript 字段。
+
+    单集识别/翻译失败时仅让该集不带字幕（不阻断审批与其它单集），
+    保证抓取批量内容时一集出错不拖垮整批。
+    """
+    settings = get_settings()
+    if not settings.crawl_subtitles_enabled:
+        return episodes
+    target = (settings.crawl_subtitle_target or "zh").strip() or "zh"
+    enriched: list[dict[str, Any]] = []
+    for ep in episodes:
+        ep = dict(ep)
+        audio_url = str(ep.get("audioUrl") or "").strip()
+        language = str(ep.get("language") or fallback_language or "en").strip()
+        if audio_url:
+            try:
+                ep["transcript"] = json.loads(
+                    subtitle_pipeline.build_transcript_json(
+                        audio_url, language, target))
+            except Exception:  # noqa: BLE001 - 单集降级：不带字幕
+                ep.pop("transcript", None)
+        enriched.append(ep)
+    return enriched
+
+
 def ingest_content(feed_url: str, content: bytes,
                    source_id: str | None = None) -> tuple[dict[str, Any], bool]:
     """解析并写入候选。返回 (候选 dict, 是否新增了收件箱条目)。
@@ -355,18 +404,24 @@ def ingest_content(feed_url: str, content: bytes,
     - 指纹未变：不产生新待办；
     - 最新条目仍处于 pending：原地刷新快照（收件箱不增加）；
     - 其余（首次抓取 / 上次已审批或驳回后有更新）：新增一条 pending。
+
+    仅在内容指纹变化时才为单集生成双语字幕（未变直接返回，零额外开销），
+    字幕随候选 episodes_json 一起进入审批流。
     """
     feed_url = validate_url(feed_url)
     payload = parse_feed(content, feed_url)
     latest = db.latest_candidate(feed_url)
+    if latest is not None and latest["content_hash"] == payload["content_hash"]:
+        return db.candidate_out(latest), False
+
+    episodes = _enrich_with_subtitles(payload["episodes"],
+                                      payload["language"])
     common = dict(
         feed_url=feed_url, title=payload["title"], author=payload["author"],
         artwork_url=payload["artwork_url"], language=payload["language"],
-        description=payload["description"], episodes=payload["episodes"],
+        description=payload["description"], episodes=episodes,
         content_hash=payload["content_hash"],
     )
-    if latest is not None and latest["content_hash"] == payload["content_hash"]:
-        return db.candidate_out(latest), False
     if latest is not None and latest["status"] == "pending":
         # 已在收件箱里等待审批：原地刷新快照，不增加重复条目。
         row = db.refresh_pending_candidate(latest["id"], **common)

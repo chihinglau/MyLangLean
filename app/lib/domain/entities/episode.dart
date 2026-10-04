@@ -1,3 +1,5 @@
+import 'transcript.dart';
+
 /// A playable episode or a locally imported media file.
 class Episode {
   const Episode({
@@ -12,6 +14,7 @@ class Episode {
     this.isLocal = false,
     this.localPath,
     this.transcriptPath,
+    this.transcript,
     this.language = 'en',
   });
 
@@ -29,6 +32,13 @@ class Episode {
   /// Absolute path of a sidecar word-level transcript JSON imported by the
   /// user (produced by the Windows Subtitle Studio). null = no paired file.
   final String? transcriptPath;
+
+  /// Word-level bilingual transcript published together with this episode
+  /// by the server (sourced from the catalog episodes payload). null = the
+  /// episode has no server-published transcript; the player may fall back
+  /// to on-demand ASR.
+  final Transcript? transcript;
+
   final String language;
 
   /// Source handed to the player: sandbox path for local files, URL otherwise.
@@ -55,6 +65,7 @@ class Episode {
         isLocal: isLocal,
         localPath: localPath ?? this.localPath,
         transcriptPath: transcriptPath ?? this.transcriptPath,
+        transcript: transcript,
         language: language ?? this.language,
       );
 
@@ -73,6 +84,10 @@ class Episode {
         isLocal: json['isLocal'] as bool? ?? false,
         localPath: json['localPath'] as String?,
         transcriptPath: json['transcriptPath'] as String?,
+        transcript: json['transcript'] is Map
+            ? Transcript.fromJson(
+                Map<String, dynamic>.from(json['transcript'] as Map))
+            : null,
         language: json['language'] as String? ?? 'en',
       );
 
@@ -88,6 +103,35 @@ class Episode {
         'isLocal': isLocal,
         'localPath': localPath,
         'transcriptPath': transcriptPath,
+        if (transcript != null) 'transcript': transcriptToJson(transcript!),
         'language': language,
       };
 }
+
+/// Serialize a [Transcript] with the shared frozen schema fields. Kept here
+/// (rather than on the entity) because [Transcript] is shared read-only across
+/// platforms; mirrors the fields consumed by `Transcript.fromJson`.
+Map<String, dynamic> transcriptToJson(Transcript t) => {
+      'version': t.version,
+      'language': t.language,
+      'duration': t.duration,
+      'segments': [
+        for (final s in t.segments)
+          {
+            'id': s.id,
+            'start': s.start,
+            'end': s.end,
+            'text': s.text,
+            if (s.translation != null) 'translation': s.translation,
+            'words': [
+              for (final w in s.words)
+                {
+                  'w': w.w,
+                  's': w.s,
+                  'e': w.e,
+                  if (w.p != null) 'p': w.p,
+                },
+            ],
+          },
+      ],
+    };

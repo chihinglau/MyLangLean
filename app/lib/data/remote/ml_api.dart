@@ -105,6 +105,41 @@ class ReleaseInfo {
   static const empty = ReleaseInfo(hasUpdate: false);
 }
 
+/// On-demand ASR job state (`/api/v1/transcriptions`).
+class RemoteTranscriptionJob {
+  const RemoteTranscriptionJob({
+    required this.id,
+    required this.status,
+    this.transcript,
+    this.billedSec = 0,
+    this.error,
+  });
+
+  final String id;
+
+  /// queued | processing | done | error
+  final String status;
+
+  /// Raw TranscriptOut JSON (matches the app's Transcript.fromJson).
+  final Map<String, dynamic>? transcript;
+  final int billedSec;
+  final String? error;
+
+  bool get isDone => status == 'done';
+  bool get isError => status == 'error';
+
+  factory RemoteTranscriptionJob.fromJson(Map<String, dynamic> json) =>
+      RemoteTranscriptionJob(
+        id: (json['id'] ?? '').toString(),
+        status: (json['status'] ?? '').toString(),
+        transcript: json['transcript'] is Map
+            ? Map<String, dynamic>.from(json['transcript'] as Map)
+            : null,
+        billedSec: (json['billed_sec'] as num?)?.toInt() ?? 0,
+        error: json['error'] as String?,
+      );
+}
+
 /// dio-based client for the PC FastAPI service.
 ///
 /// One instance lives for the whole app (wired in `main.dart`). It carries
@@ -233,6 +268,32 @@ class MlApi {
         .toList();
   }
 
+  /// Submits an on-demand transcription job for [audioUrl]; the server
+  /// starts ASR and returns immediately (202). Poll with [transcriptionJob].
+  /// [clientKey] gives server-side idempotency (no double quota charge).
+  Future<RemoteTranscriptionJob> createTranscription({
+    required String audioUrl,
+    String language = 'en',
+    String? targetLang,
+    String? clientKey,
+  }) async {
+    final res = await _post('/api/v1/transcriptions', data: {
+      'audio_url': audioUrl,
+      'language': language,
+      if (targetLang != null && targetLang.isNotEmpty)
+        'target_lang': targetLang,
+      if (clientKey != null && clientKey.isNotEmpty) 'client_key': clientKey,
+    });
+    return RemoteTranscriptionJob.fromJson(
+        res.data as Map<String, dynamic>);
+  }
+
+  Future<RemoteTranscriptionJob> transcriptionJob(String jobId) async {
+    final res = await _get('/api/v1/transcriptions/$jobId');
+    return RemoteTranscriptionJob.fromJson(
+        res.data as Map<String, dynamic>);
+  }
+
   Podcast _podcastFromRemote(Map<String, dynamic> json) {
     // Make relative media URLs (artwork) directly usable by Image.network.
     if (json['artworkUrl'] is String) {
@@ -252,6 +313,7 @@ class MlApi {
         audioUrl: absoluteUrl(baseUrl, raw.audioUrl),
         duration: raw.duration,
         pubDate: raw.pubDate,
+        transcript: raw.transcript,
         language: raw.language.isNotEmpty ? raw.language : podcast.language,
       );
 

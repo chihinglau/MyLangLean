@@ -12,9 +12,14 @@
 """
 from __future__ import annotations
 
+import os
+import tempfile
+import types
+
 from harness import ADMIN_HEADERS, fresh_client, run_module
 
-from app.services import crawler
+from app.core.config import get_settings
+from app.services import asr, crawler, subtitle_pipeline
 
 RSS_BYTES = b"""<?xml version='1.0' encoding='UTF-8'?>
 <rss xmlns:itunes='http://www.itunes.com/dtds/podcast-1.0.dtd' version='2.0'>
@@ -304,6 +309,215 @@ def test_disabled_source_not_crawled_and_empty_job():
         assert "没有启用的订阅源" in job["message"]
         jobs = client.get(f"{BASE}/jobs", headers=ADMIN_HEADERS).json()
         assert jobs["total"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 抓取自动双语字幕 + 审核发布同步字幕
+# ---------------------------------------------------------------------------
+
+def test_pipeline_bilingual_and_source_only():
+    # 目标 zh：每个句子带中文翻译与逐词时间戳
+    t = subtitle_pipeline.build_transcript("https://x.test/a.mp3", "en", "zh")
+    assert t.language == "en"
+    assert t.segments and t.version == 1
+    for seg in t.segments:
+        assert seg.text and seg.words
+        assert (seg.translation or "").startswith("【译】")
+    # 无目标语言：纯源语言字幕
+    t2 = subtitle_pipeline.build_transcript("https://x.test/a.mp3", "en", None)
+    assert all(seg.translation is None for seg in t2.segments)
+
+
+def test_crawl_auto_attaches_bilingual_subtitles():
+    with fresh_client():
+        cand, created = crawler.ingest_content(FEED_URL, RSS_BYTES, None)
+        assert created is True
+        assert len(cand["episodes"]) == 2
+        for ep in cand["episodes"]:
+            tr = ep["transcript"]
+            assert isinstance(tr, dict)
+            assert tr["language"] == "es"  # 源语言跟随单集
+            segs = tr["segments"]
+            assert segs and all(s["words"] for s in segs)
+            # “源语言 + 中文”双语：逐句都有中文翻译
+            assert all((s.get("translation") or "").startswith("【译】")
+                       for s in segs)
+
+        # 未变化再次抓取：直接返回，字幕仍在（不重复生成）
+        cand2, created2 = crawler.ingest_content(FEED_URL, RSS_BYTES, None)
+        assert created2 is False
+        assert cand2["episodes"][0]["transcript"] is not None
+
+
+def test_approve_publishes_audio_and_subtitle_together():
+    with fresh_client() as (client, _dir):
+        cand, _ = crawler.ingest_content(FEED_URL, RSS_BYTES, None)
+        result = crawler.db.import_candidate(cand["id"])
+        pid = result["podcast"]["id"]
+        assert result["inserted_episodes"] == 2
+        # 审批返回的单集已含字幕
+        assert all(e["transcript"] is not None for e in result["episodes"])
+
+        # 正式目录接口随单集同步下发字幕（App 无需再调转录接口）
+        eps = client.get(
+            f"/api/v1/catalog/podcasts/{pid}/episodes").json()
+        assert len(eps) == 2
+        for ep in eps:
+            tr = ep["transcript"]
+            assert isinstance(tr, dict) and tr["segments"]
+            assert all(s.get("translation") for s in tr["segments"])
+
+
+def test_one_episode_subtitle_failure_isolated():
+    with fresh_client():
+        orig_build = subtitle_pipeline.build_transcript_json
+        calls = {"n": 0}
+
+        def fail_first(source, language="en", target_lang=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("asr boom")
+            return orig_build(source, language, target_lang)
+
+        subtitle_pipeline.build_transcript_json = fail_first
+        try:
+            cand, created = crawler.ingest_content(FEED_URL, RSS_BYTES, None)
+            assert created is True
+            eps = cand["episodes"]
+            assert eps[0].get("transcript") is None  # 失败单集降级
+            assert eps[1]["transcript"] is not None  # 其它单集不受影响
+        finally:
+            subtitle_pipeline.build_transcript_json = orig_build
+
+
+def test_subtitles_can_be_disabled():
+    with fresh_client():
+        # 必须在 fresh_client（会清 settings 缓存）之后再取设置对象。
+        settings = get_settings()
+        saved = settings.crawl_subtitles_enabled
+        settings.crawl_subtitles_enabled = False
+        try:
+            cand, created = crawler.ingest_content(FEED_URL, RSS_BYTES, None)
+            assert created is True
+            assert all("transcript" not in ep for ep in cand["episodes"])
+        finally:
+            settings.crawl_subtitles_enabled = saved
+
+
+def test_reapproval_backfills_empty_subtitles():
+    with fresh_client():
+        # 先以“关闭字幕”导入（模拟历史无字幕内容）
+        settings = get_settings()
+        saved = settings.crawl_subtitles_enabled
+        settings.crawl_subtitles_enabled = False
+        cand, _ = crawler.ingest_content(FEED_URL, RSS_BYTES, None)
+        first = crawler.db.import_candidate(cand["id"])
+        pid = first["podcast"]["id"]
+        assert all(e["transcript"] is None for e in first["episodes"])
+        settings.crawl_subtitles_enabled = saved
+
+        # 源内容变化后新候选带字幕；二次审批只补字幕，不重复插入单集
+        changed = RSS_BYTES.replace(b"<description>",
+                                    b"<description>refreshed ")
+        cand2, created = crawler.ingest_content(FEED_URL, changed, None)
+        assert created is True
+        out = crawler.db.import_candidate(cand2["id"])
+        assert out["inserted_episodes"] == 0
+        assert out["backfilled_transcripts"] == 2
+        assert all(e["transcript"] is not None for e in out["episodes"])
+        # 同一播客仍只有 2 集
+        assert pid == out["podcast"]["id"]
+
+
+# ---------------------------------------------------------------------------
+# 真实 ASR 后端 / 翻译容错
+# ---------------------------------------------------------------------------
+
+def test_pipeline_translation_failure_is_source_only():
+    def boom(texts, source, target):
+        raise RuntimeError("network down")
+    orig = subtitle_pipeline.translate
+    subtitle_pipeline.translate = boom
+    try:
+        t = subtitle_pipeline.build_transcript("https://x/a.mp3", "en", "zh")
+        assert t.segments and t.segments[0].text
+        # 翻译整体失败：逐句保留源语言，不产生空/假译文，也不抛异常
+        assert all(seg.translation is None for seg in t.segments)
+    finally:
+        subtitle_pipeline.translate = orig
+
+
+def test_pipeline_skips_empty_sentence_translations():
+    # 单句翻译失败（返回 ''）时只跳过该句，其它句仍拿到译文
+    fake = ["", "【译】Pick a podcast."]
+
+    def partial(texts, source, target):
+        return list(fake)
+    orig = subtitle_pipeline.translate
+    subtitle_pipeline.translate = partial
+    try:
+        t = subtitle_pipeline.build_transcript("https://x/a.mp3", "en", "zh")
+        assert t.segments[0].translation is None
+        assert t.segments[1].translation == "【译】Pick a podcast."
+    finally:
+        subtitle_pipeline.translate = orig
+
+
+def test_mymemory_provider_isolates_sentence_failure():
+    from app.services.translate import MyMemoryTranslateProvider
+    provider = MyMemoryTranslateProvider(pause=0)
+    provider._one = lambda text, s, t: (_ for _ in ()).throw(  # noqa: E731
+        RuntimeError("quota"))
+    out = provider.translate(["hello", "world"], "en", "zh")
+    assert out == ["", ""]  # 不抛异常，全部降级为空串
+
+
+def test_real_asr_remote_download_and_cleanup():
+    settings = get_settings()
+    saved_backend = settings.asr_backend
+    settings.asr_backend = "faster_whisper"
+
+    created: dict[str, str] = {}
+
+    def fake_download(source, timeout, deadline=120.0):
+        fd, path = tempfile.mkstemp(prefix="mll-test-", suffix=".mp3")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(b"fake-audio")
+        created["path"] = path
+        return path
+
+    class FakeModel:
+        def transcribe(self, media, **kwargs):
+            # 识别的是下载后的本地文件；语种按传入（de），保证字幕语种正确
+            assert media == created["path"]
+            assert kwargs["language"] == "de"
+            words = [
+                types.SimpleNamespace(word="Guten", start=0.1, end=0.5,
+                                      probability=0.9),
+                types.SimpleNamespace(word="Tag", start=0.5, end=0.9,
+                                      probability=0.8),
+            ]
+            seg = types.SimpleNamespace(start=0.1, end=0.9, text="Guten Tag",
+                                       words=words)
+            info = types.SimpleNamespace(language="de", duration=1.0)
+            return iter([seg]), info
+
+    orig_get_model = asr._get_model
+    orig_download = asr._download
+    asr._get_model = lambda s: FakeModel()
+    asr._download = fake_download
+    try:
+        out = asr.transcribe("https://x.test/a.mp3", "de")
+        assert out.language == "de"
+        assert out.segments[0].text == "Guten Tag"
+        assert [w.w for w in out.segments[0].words] == ["Guten", "Tag"]
+        # 临时音频文件识别后已清理
+        assert not os.path.exists(created["path"])
+    finally:
+        asr._get_model = orig_get_model
+        asr._download = orig_download
+        settings.asr_backend = saved_backend
 
 
 if __name__ == "__main__":

@@ -14,15 +14,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, statu
 from ..core import db
 from ..core.deps import CurrentUser, Principal
 from ..models import (
-    SegmentOut,
     TranscriptionIn,
     TranscriptionJobOut,
-    TranscriptOut,
-    WordOut,
 )
-from ..services import asr as asr_service
 from ..services.quota import charge
-from ..services.translate import translate
+from ..services.subtitle_pipeline import build_transcript
 
 router = APIRouter(prefix="/api/v1/transcriptions", tags=["transcriptions"])
 
@@ -31,7 +27,7 @@ router = APIRouter(prefix="/api/v1/transcriptions", tags=["transcriptions"])
 class Job:
     id: str
     status: str = "queued"
-    transcript: TranscriptOut | None = None
+    transcript = None
     billed_sec: int = 0
     error: str | None = None
     # idempotency: (user_id, client_key) -> job_id
@@ -42,45 +38,18 @@ _jobs: dict[str, Job] = {}
 _dedupe: dict[tuple[str, str], str] = {}
 
 
-def _to_transcript(result: asr_service.AsrResult,
-                   target_lang: str | None) -> TranscriptOut:
-    translations: dict[int, str] = {}
-    if target_lang:
-        texts = [s.text for s in result.segments]
-        for seg_id, text in zip(
-            [s.id for s in result.segments],
-            translate(texts, result.language, target_lang),
-        ):
-            translations[seg_id] = text
-
-    return TranscriptOut(
-        language=result.language,
-        duration=result.duration,
-        segments=[
-            SegmentOut(
-                id=s.id,
-                start=s.start,
-                end=s.end,
-                text=s.text,
-                translation=translations.get(s.id),
-                words=[WordOut(w=w.w, s=w.s, e=w.e, p=w.p) for w in s.words],
-            )
-            for s in result.segments
-        ],
-    )
-
-
 async def _run(job: Job, user_id: str, source: str, language: str,
                target_lang: str | None) -> None:
     job.status = "processing"
     try:
         loop = asyncio.get_running_loop()
+        # ASR + 翻译统一在线程执行器里跑（与爬虫自动字幕同一流水线）。
         result = await loop.run_in_executor(
-            None, asr_service.transcribe, source, language)
+            None, build_transcript, source, language, target_lang)
         duration_sec = max(1, round(result.duration))
         if db.get_user(user_id) is not None:
             charge(user_id, duration_sec)
-        job.transcript = _to_transcript(result, target_lang)
+        job.transcript = result
         job.billed_sec = duration_sec
         job.status = "done"
     except HTTPException as exc:
